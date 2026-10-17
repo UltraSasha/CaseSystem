@@ -1,3 +1,7 @@
+commands:
+  # Allow the /casesystem alias? If false it prints "Unknown command" like vanilla.
+  case-system-alias: true
+
 # ============================================================
 #  CaseSystem - full configuration example
 #  Works on Paper 1.19.2 and 1.21.1 (single JAR).

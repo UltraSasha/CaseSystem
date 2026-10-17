@@ -16,9 +16,10 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 /**
- * Plugin entry point: bootstrap, command /cs,
+ * Plugin entry point: bootstrap, command /case (+ optional alias /casesystem),
  * admin subcommands, resource-pack delivery on join and storage sync hooks.
  *
  * Sub-managers: {@link CaseManager} (config model + GUIs),
@@ -27,6 +28,9 @@ import java.util.Locale;
  * {@link RewardManager} (placeholders & console commands).
  */
 public final class CaseSystem extends JavaPlugin implements Listener, TabCompleter {
+
+    /** Command label used for Bukkit.getPluginCommand(...) - must match plugin.yml. */
+    public static final String COMMAND = "case";
 
     private static CaseSystem instance;
 
@@ -55,14 +59,13 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
         this.rewardManager    = new RewardManager(this);
         this.animationManager = new AnimationManager(this);
 
-        org.bukkit.command.PluginCommand csCmd = Bukkit.getPluginCommand("cs");
-        if (csCmd != null) {
-            csCmd.setExecutor(this);
-            csCmd.setTabCompleter(this);
+        org.bukkit.command.PluginCommand cmd = Bukkit.getPluginCommand(COMMAND);
+        if (cmd != null) {
+            cmd.setExecutor(this);
+            cmd.setTabCompleter(this);
         } else {
-            getLogger().warning("[CaseSystem] Command 'cs' is not registered - plugin.yml is missing from the JAR "
-                    + "(the jar in plugins/ was built without processResources or replaced manually). "
-                    + "Build a fresh jar with './gradlew build' and copy ONLY build/libs/CaseSystem-1.0.0.jar.");
+            getLogger().severe("[CaseSystem] Command '" + COMMAND + "' is not registered - plugin.yml inside the JAR "
+                    + "does not declare it. Build a fresh jar with './gradlew build' and replace the old one in plugins/.");
         }
         Bukkit.getPluginManager().registerEvents(this, this);
         Bukkit.getPluginManager().registerEvents(caseManager, this);
@@ -95,10 +98,15 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
     }
 
     // ------------------------------------------------------------------
-    // Commands
+    // Commands: /case [reload|give|take|stats|list|debug]  (alias /casesystem)
     // ------------------------------------------------------------------
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
+        // /casesystem can be disabled in config -> then it behaves like an unknown command.
+        if (label.equalsIgnoreCase("casesystem") && !getConfig().getBoolean("commands.case-system-alias", true)) {
+            sender.sendMessage(org.bukkit.ChatColor.RED + "Unknown command. Type \"/help\" for help.");
+            return true;
+        }
         if (args.length == 0) {
             if (!(sender instanceof Player p)) { sender.sendMessage("GUI only for players."); return true; }
             caseManager.openMainGui(p);
@@ -127,15 +135,57 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                 try { amount = Integer.parseInt(args[3]); } catch (NumberFormatException e) {
                     sender.sendMessage(Messages.msg("usage-give")); return true;
                 }
+                if (amount <= 0) { sender.sendMessage(Messages.msg("usage-give")); return true; }
                 dataManager.addOpens(target.getUniqueId(), target.getName(), caseId, amount);
-                sender.sendMessage(Messages.get("given")
+                String m = Messages.get("given")
                         .replace("%player%", target.getName())
                         .replace("%case%", caseId)
-                        .replace("%amount%", String.valueOf(amount)));
-                if (sender != target) target.sendMessage(Messages.get("given")
+                        .replace("%amount%", String.valueOf(amount));
+                sender.sendMessage(m);
+                if (sender != target) target.sendMessage(m);
+                return true;
+            }
+            case "take": {
+                if (!sender.hasPermission("casesystem.admin")) { noPerm(sender); return true; }
+                if (args.length < 4) { sender.sendMessage(Messages.msg("usage-take")); return true; }
+                Player target = Bukkit.getPlayerExact(args[1]);
+                if (target == null) { sender.sendMessage(Messages.msg("target-offline")); return true; }
+                String caseId = args[2].toLowerCase(Locale.ROOT);
+                if (!caseManager.getCases().containsKey(caseId)) {
+                    sender.sendMessage(Messages.get("unknown-case").replace("%case%", caseId));
+                    return true;
+                }
+                int amount;
+                try { amount = Integer.parseInt(args[3]); } catch (NumberFormatException e) {
+                    sender.sendMessage(Messages.msg("usage-take")); return true;
+                }
+                if (amount <= 0) { sender.sendMessage(Messages.msg("usage-take")); return true; }
+                int taken = dataManager.takeOpens(target.getUniqueId(), target.getName(), caseId, amount);
+                String m = Messages.get("taken")
                         .replace("%player%", target.getName())
                         .replace("%case%", caseId)
-                        .replace("%amount%", String.valueOf(amount)));
+                        .replace("%amount%", String.valueOf(taken));
+                sender.sendMessage(m);
+                return true;
+            }
+            case "stats": {
+                if (!sender.hasPermission("casesystem.admin")) { noPerm(sender); return true; }
+                if (args.length < 2) { sender.sendMessage(Messages.msg("usage-stats")); return true; }
+                Player target = Bukkit.getPlayerExact(args[1]);
+                UUID tid; String tname;
+                if (target != null) { tid = target.getUniqueId(); tname = target.getName(); }
+                else {
+                    org.bukkit.OfflinePlayer op = Bukkit.getOfflinePlayer(args[1]);
+                    if (!op.hasPlayedBefore()) { sender.sendMessage(Messages.msg("target-offline")); return true; }
+                    tid = op.getUniqueId(); tname = op.getName() == null ? args[1] : op.getName();
+                }
+                sender.sendMessage(Messages.get("stats-header").replace("%player%", tname));
+                for (CaseManager.CaseDef c : caseManager.getCases().values()) {
+                    sender.sendMessage(Messages.get("stats-entry")
+                            .replace("%case%", c.id)
+                            .replace("%available%", fmt(dataManager.getAvailable(tid, tname, c.id)))
+                            .replace("%opened%", String.valueOf(dataManager.getOpened(tid, c.id))));
+                }
                 return true;
             }
             case "list": {
@@ -148,7 +198,7 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                         rs.append(r.color).append(r.id).append("&7(")
                           .append(wSum > 0 ? String.format(Locale.US, "%.1f%%", 100.0 * Math.max(0, r.weight) / wSum) : "0%").append("&7) ");
                     String avail = "нет";
-                    if (sender instanceof Player pl) avail = String.valueOf(dataManager.getAvailable(pl.getUniqueId(), pl.getName(), c.id));
+                    if (sender instanceof Player pl) avail = fmt(dataManager.getAvailable(pl.getUniqueId(), pl.getName(), c.id));
                     sender.sendMessage(Messages.get("list-entry")
                             .replace("%case%", c.id)
                             .replace("%available%", avail)
@@ -168,6 +218,10 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                 lines.add("storage=" + dataManager.storageType());
                 lines.add("mode=" + animationManager.currentMode());
                 lines.add("cases=" + caseManager.getCases().keySet());
+                if (sender instanceof Player pl) {
+                    for (String cid : caseManager.getCases().keySet())
+                        lines.add("avail." + cid + "=" + fmt(dataManager.getAvailable(pl.getUniqueId(), pl.getName(), cid)));
+                }
                 for (String l : lines)
                     sender.sendMessage(Messages.get("debug-line").replace("%line%", l));
                 return true;
@@ -178,21 +232,24 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
         }
     }
 
+    private static String fmt(int avail) { return avail == Integer.MAX_VALUE ? "∞" : String.valueOf(avail); }
+
     private void noPerm(CommandSender s) { s.sendMessage(Messages.msg("no-permission")); }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command cmd, String alias, String[] args) {
         List<String> out = new ArrayList<>();
+        if (!sender.hasPermission("casesystem.admin")) return out;
         if (args.length == 1) {
-            for (String s : List.of("reload", "give", "list", "debug"))
+            for (String s : List.of("reload", "give", "take", "stats", "list", "debug"))
                 if (s.startsWith(args[0].toLowerCase(Locale.ROOT))) out.add(s);
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("give") && sender.hasPermission("casesystem.admin")) {
+        } else if (args.length == 2 && List.of("give", "take", "stats").contains(args[0].toLowerCase(Locale.ROOT))) {
             String a = args[1].toLowerCase(Locale.ROOT);
             for (Player p : Bukkit.getOnlinePlayers()) if (p.getName().toLowerCase(Locale.ROOT).startsWith(a)) out.add(p.getName());
-        } else if (args.length == 3 && args[0].equalsIgnoreCase("give")) {
+        } else if (args.length == 3 && List.of("give", "take").contains(args[0].toLowerCase(Locale.ROOT))) {
             String a = args[2].toLowerCase(Locale.ROOT);
             for (String id : caseManager.getCases().keySet()) if (id.startsWith(a)) out.add(id);
-        } else if (args.length == 4 && args[0].equalsIgnoreCase("give")) {
+        } else if (args.length == 4 && List.of("give", "take").contains(args[0].toLowerCase(Locale.ROOT))) {
             out.add("1");
         }
         return out;

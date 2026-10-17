@@ -246,11 +246,9 @@ public final class CaseManager implements Listener {
         fill(inv, cfg);
         int slot = 10;
         for (CaseDef c : cases.values()) {
-            // Single source of truth: LuckPerms numbered nodes / storage counter / plain node.
-            // (Previously this required the bare node casesystem.case.open.<id>, which is NOT
-            // implied by casesystem.case.open.<id>.5 - so LP grants showed no cases in GUI.)
+            // Cases are ALWAYS shown regardless of rights/counter (product decision).
+            // The counter is only displayed in the lore.
             int avail = plugin.data().getAvailable(p.getUniqueId(), p.getName(), c.id);
-            if (avail <= 0) continue;
             ItemStack it = c.icon.clone();
             ItemMeta m = it.getItemMeta();
             if (m != null) {

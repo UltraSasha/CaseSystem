@@ -10,13 +10,13 @@ softdepend:
   - LuckPerms
 
 commands:
-  cs:
+  case:
     description: Open the CaseSystem GUI.
-
+    aliases: [casesystem]
 
 permissions:
   casesystem.admin:
-    description: Access to admin subcommands (reload/give/list/debug).
+    description: Access to admin subcommands (reload/give/take/stats/list/debug).
     default: op
   casesystem.case.open:
     description: Base node; actual grants look like casesystem.case.open.<case_id>.<amount>.
