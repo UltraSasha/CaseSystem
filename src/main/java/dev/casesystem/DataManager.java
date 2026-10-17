@@ -5,6 +5,7 @@ import net.luckperms.api.LuckPermsProvider;
 import net.luckperms.api.model.user.User;
 import net.luckperms.api.node.Node;
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
@@ -87,7 +88,11 @@ public final class DataManager {
                         }
                     }
                     // No numbered node -> fall back to plain presence check.
-                    return u.hasPermission(perm) ? Integer.MAX_VALUE : 0;
+                    // (LuckPerms' User has no hasPermission(String); inspect explicit nodes instead.)
+                    for (Node n : u.getNodes()) {
+                        if (n.getKey().equals(perm)) return n.getValue() ? Integer.MAX_VALUE : 0;
+                    }
+                    return 0;
                 }
             } catch (Throwable t) {
                 plugin.getLogger().warning("LuckPerms read failed: " + t.getMessage());
@@ -119,7 +124,8 @@ public final class DataManager {
                     Set<Node> toRemove = new HashSet<>();
                     for (Node n : u.getNodes())
                         if (n.getKey().startsWith(perm + ".")) toRemove.add(n);
-                    if (!toRemove.isEmpty()) u.data().remove(toRemove);
+                    // Storage.set removes one Node at a time - loop instead of passing the Set.
+                    for (Node n : toRemove) u.data().remove(n);
                     if (newAmount > 0)
                         u.data().add(Node.builder(perm + "." + newAmount).value(true).build());
                     else
@@ -217,8 +223,13 @@ public final class DataManager {
         private final UUID id;
         PlayerHolder(UUID id, String name) { this.id = id; }
         boolean has(String perm) {
-            var p = Bukkit.getOfflinePlayer(id);
-            return p != null && p.hasPermission(perm);
+            // OfflinePlayer has no hasPermission() in the 1.19.2 API - check online players
+            // directly; for offline ones fall back to the permission registered in plugin.yml
+            // with default TRUE (best-effort without LuckPerms).
+            Player online = Bukkit.getPlayer(id);
+            if (online != null) return online.hasPermission(perm);
+            org.bukkit.permissions.Permission def = Bukkit.getPluginManager().getPermission(perm);
+            return def != null && def.getDefault() == org.bukkit.permissions.PermissionDefault.TRUE;
         }
     }
 
