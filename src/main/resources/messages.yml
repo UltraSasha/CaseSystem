@@ -1,20 +1,79 @@
+# ============================================================
+#  CaseSystem — ВСЕ тексты плагина (включая GUI).
+#  Поддерживаются &-коды цветов. Плейсхолдеры: %case% %player%
+#  %amount% %available% %rarities% %items% %perm% %color% %rarity%
+#  %percent% %count% %item% %desc% (маркер вставки описания кейса)
+#  %items% (маркер вставки списка предметов внутри блока редкости)
+# ============================================================
+
 prefix: "&8[&6CaseSystem&8] &r"
+
+# ---------- сообщения команд ----------
 no-permission: "&cУ вас нет прав."
 reloaded: "&aКонфигурация перезагружена."
 unknown-case: "&cКейс не найден: &f%case%"
 no-rights: "&cУ вас нет открытий кейса &f%case%&c."
+opening-busy: "&cДождитесь окончания текущей анимации."
 given: "&aВыдано &f%amount%x &f%case% &aигроку &f%player%&a."
 taken: "&aЗабрано &f%amount%x &f%case% &aу игрока &f%player%&a."
 target-offline: "&cИгрок не найден."
 usage-give: "&fИспользование: /case give <player> <case_id> <amount>"
 usage-take: "&fИспользование: /case take <player> <case_id> <amount>"
 usage-stats: "&fИспользование: /case stats <player>"
-usage-unknown: "&f/case | /case reload | /case give <player> <case_id> <amount> | /case take ... | /case stats <player> | /case list | /case debug"
+usage-unknown: "&f/case | reload | give <player> <case_id> <amount> | take <player> <case_id> <amount> | stats <player> | list | debug"
 stats-header: "&6Статистика игрока &f%player%&6:"
 stats-entry: "&8- &f%case% &7(доступно: &e%available%&7, всего открыто: &e%opened%&7)"
 list-header: "&6Кейсы:"
-list-entry: "&8- &f%case% &7(доступен: %available%, вес редкостей: %rarities%)"
+list-entry: "&8- &f%case% &7(редкостей: %rarities%, право: casesystem.case.%perm%)"
 debug-header: "&eCaseSystem Debug:"
 debug-line: "&8- &7%line%"
 won-message: "&aВы получили: %item% &7(%rarity%)"
-opening-busy: "&cДождитесь окончания анимации."
+
+# ---------- заголовки GUI ----------
+gui-main-title: "&8Кейсы"
+gui-detail-title: "&8Кейс: &f%case%"
+gui-roulette-title: "&8Открытие&7..."
+
+# ---------- текст «доступно» (%available%) ----------
+gui-available-infinite: "&a∞ (бесконечно)"
+gui-available-finite: "&e%amount%"
+
+# ---------- главный GUI: предмет-кейс ----------
+gui-case-name: "%case%"
+gui-main-entry-lore:
+  - "&7Открытий: &e%available%"
+  - "&7Редкостей: &f%rarities% &8| &7Предметов: &f%items%"
+  - ""
+  - "%desc%"
+  - ""
+  - "&8Кликните для просмотра"
+
+# ---------- детальное GUI: кнопка покупки (клик по иконке кейса = открыть) ----------
+gui-detail-lore:
+  - "&7Доступно открытий: &e%available%"
+  - "&7Право: &f%perm%"
+  - ""
+  - "%desc%"
+  - ""
+  - "&a▶ Кликните по кейсу,"
+  - "&aчтобы открыть его"
+
+# ---------- блок редкостей в детальном GUI ----------
+rarity-name: "%color%%rarity%"
+gui-rarity-lore:
+  - "&7Шанс редкости: &e%percent%"
+  - "&7Предметов: &f%count%"
+  - ""
+  - "%items%"
+gui-rarity-item-line: "  &8- &f%item% &7(%percent%)"
+
+# ---------- предметы внутри редкостей (иконки в GUI) ----------
+item-name: "%item%"
+item-lore-rarity: "&7Редкость: %color%%rarity%"
+item-lore-chance: "&7Шанс выпадения: &e%percent%"
+
+# ---------- рулетка (GUI-анимация) ----------
+gui-roulette-selector: "&6▼ Текущий кандидат ▼"
+
+# ---------- стеклянная панель-заполнитель ----------
+gui-filler-name: "&0"

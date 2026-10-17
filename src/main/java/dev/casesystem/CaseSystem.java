@@ -314,6 +314,22 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
             catch (Throwable ignored) {}
         }
 
+        /** Registers casesystem.case.&lt;PermId&gt; permissions so vanilla/OP defaults work. */
+        static void registerCasePermissions(java.util.Collection<String> permIds) {
+            for (String pid : permIds) {
+                String node = "casesystem.case." + pid.toLowerCase(java.util.Locale.ROOT);
+                try {
+                    if (Bukkit.getPluginManager().getPermission(node) == null) {
+                        org.bukkit.permissions.Permission p = new org.bukkit.permissions.Permission(node,
+                                org.bukkit.permissions.PermissionDefault.FALSE);
+                        // Child: the numbered counter node of the same case.
+                        p.getChildren().put(node.replaceFirst("^casesystem\\.case\\.", "casesystem.count.") + ".*", true);
+                        Bukkit.getPluginManager().addPermission(p);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+
         public static String get(String key) {
             String def = switch (key) {
                 case "prefix" -> "&8[&6CaseSystem&8] &r";
@@ -321,6 +337,22 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                 default -> key;
             };
             return color(yaml.getString(key, def));
+        }
+
+        /** String list template from messages.yml (GUI lore lines etc.). */
+        public static List<String> getList(String key) {
+            List<String> raw = yaml.getStringList(key);
+            if (raw.isEmpty()) {
+                raw = switch (key) {
+                    case "gui-main-entry-lore" -> List.of("&7Открытий: &e%available%", "", "%desc%", "&8Кликните для просмотра");
+                    case "gui-detail-lore" -> List.of("&7Доступно открытий: &e%available%", "", "%desc%", "&a▶ Кликните по кейсу,", "&aчтобы открыть его");
+                    case "gui-rarity-lore" -> List.of("%color%%rarity%", "&7Шанс редкости: &e%percent%", "&7Предметов: &f%count%", "", "%items%");
+                    default -> List.of();
+                };
+            }
+            List<String> out = new ArrayList<>();
+            for (String s : raw) out.add(color(s));
+            return out;
         }
 
         public static String msg(String key) { return get("prefix") + get(key); }

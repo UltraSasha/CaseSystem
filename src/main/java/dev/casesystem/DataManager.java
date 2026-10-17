@@ -15,6 +15,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -27,16 +28,28 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Rights & counters storage.
  *
- * Permission model: casesystem.case.open.&lt;case_id&gt;.&lt;amount&gt;
- *  - LuckPerms installed  -> the node is read/rewritten through the LuckPerms API
- *    (User + Node, value = remaining opens).
- *  - no LuckPerms         -> presence-only check of the group/user permission plus a
- *    numeric counter kept in JSON or SQLite (bundled JDBC driver), synced on join/quit.
+ * Permission model (all ids are LETTERS-ONLY, a-zA-Z):
+ *   casesystem.openall              -> access to every case (still needs a counter)
+ *   casesystem.unlimited            -> infinite opens of every case
+ *   casesystem.case.&lt;PermId&gt;        -> base right for one case
+ *   casesystem.count.&lt;PermId&gt;.&lt;amount&gt; -> numeric counter (remaining opens)
+ * Legacy nodes casesystem.case.open.&lt;id&gt;(.&lt;amount&gt;) are still read for migration:
+ * a bare legacy node on a non-OP login is revoked and credited as +1 open.
+ *
+ *  - LuckPerms installed -> counters are rewritten through the LuckPerms API
+ *    (User + Node + saveUser).
+ *  - no LuckPerms        -> vanilla permission presence + numeric counter kept in
+ *    JSON or SQLite storage, synced on join/quit.
  *
  * All disk/DB writes are asynchronous (single worker thread).
  */
 public final class DataManager {
 
+    public static final String OPENALL  = "casesystem.openall";
+    public static final String UNLIMITED = "casesystem.unlimited";
+    public static final String CASE_BASE = "casesystem.case.";
+    public static final String COUNT_BASE = "casesystem.count.";
+    /** Legacy prefix, kept readable for migration only. */
     public static final String PERM_BASE = "casesystem.case.open.";
 
     private final CaseSystem plugin;
@@ -76,52 +89,56 @@ public final class DataManager {
     // Public API
     // ------------------------------------------------------------------
 
-    /** Remaining opens for a case (>= 0). Cases are ALWAYS visible in the GUI -
-     *  this method only reports how many opens the player has (0 = no counter yet). */
+    /** Resolves the letters-only permission id for a case id (falls back to sanitized id). */
+    private String permIdOf(String caseId) {
+        CaseManager.CaseDef c = plugin.cases() == null ? null : plugin.cases().getCases().get(caseId.toLowerCase(Locale.ROOT));
+        return c != null ? c.permId.toLowerCase(Locale.ROOT) : CaseManager.sanitizePermId("", caseId).toLowerCase(Locale.ROOT);
+    }
+
+    /** Remaining opens for a case (>= 0, MAX_VALUE = unlimited). Cases are ALWAYS visible in the GUI. */
     public int getAvailable(UUID id, String name, String caseId) {
-        // 1) The plugin's own counter is the source of truth (LP node / storage counter).
+        caseId = caseId.toLowerCase(Locale.ROOT);
+        String pid = permIdOf(caseId);
+        Player online = Bukkit.getPlayer(id);
+        PlayerHolder ph = new PlayerHolder(id, name);
+
+        // Global nodes first.
+        if (ph.has(UNLIMITED)) return Integer.MAX_VALUE;
+        boolean openall = ph.has(OPENALL);
+
+        // 1) LuckPerms numbered counter node: casesystem.count.<pid>.<amount>
         if (usingLuckPerms()) {
             try {
                 User u = lpApi().getUserManager().getUser(id);
                 if (u != null) {
                     int best = -1;
-                    boolean bareGranted = false;
-                    for (Node n : u.getNodes()) {
+                    for (Node n : u.getDistinctNodes()) {
                         String k = n.getKey();
-                        if (k.startsWith(PERM_BASE + caseId.toLowerCase(Locale.ROOT) + ".")) {
-                            if (!n.getValue()) continue;
-                            String suffix = k.substring((PERM_BASE + caseId.toLowerCase(Locale.ROOT)).length() + 1);
-                            try { best = Math.max(best, Integer.parseInt(suffix)); } catch (NumberFormatException ignored) {}
-                        } else if (k.equals(PERM_BASE + caseId.toLowerCase(Locale.ROOT))) {
-                            bareGranted = n.getValue();
+                        if (!n.getValue()) continue;
+                        if (k.startsWith(COUNT_BASE + pid + ".")) {
+                            try { best = Math.max(best, Integer.parseInt(k.substring((COUNT_BASE + pid).length() + 1))); }
+                            catch (NumberFormatException ignored) {}
+                        } else if (k.equals(COUNT_BASE + pid)) {
+                            best = Math.max(best, 0); // explicit zero marker
                         }
                     }
                     if (best >= 0) return best;
-                    // Bare node without number: OP -> unlimited; normal player ->
-                    // migrate on login (see onLogin/migrateBareNodes), until then treat as 0.
-                    if (bareGranted) {
-                        Player online = Bukkit.getPlayer(id);
-                        return (online != null && online.isOp()) ? Integer.MAX_VALUE : 0;
-                    }
-                    return 0;
                 }
             } catch (Throwable t) {
                 plugin.getLogger().warning("LuckPerms read failed: " + t.getMessage());
             }
         }
-        // 2) No LP (or user not loaded): cached counter first.
+        // 2) Local storage counter (source of truth without LP; fallback with LP).
         Map<String, Integer> m = cache.get(id);
-        if (m != null && m.containsKey(caseId)) return Math.max(0, m.get(caseId));
-        // 3) Vanilla numbered permission grant, e.g. ...open.common.5
-        PlayerHolder ph = new PlayerHolder(id, name);
-        for (String s : ph.grantedSuffixes(PERM_BASE + caseId.toLowerCase(Locale.ROOT))) {
+        if (m != null && m.containsKey(pid)) return Math.max(0, m.get(pid));
+        if (m != null && m.containsKey(caseId)) return Math.max(0, m.get(caseId)); // legacy key
+        // 3) Vanilla numbered permission grant: casesystem.count.<pid>.<n>
+        for (String s : ph.grantedSuffixes(COUNT_BASE + pid)) {
             try { int v = Integer.parseInt(s); if (v > 0) return v; } catch (NumberFormatException ignored) {}
         }
-        // 4) Bare node: OP -> unlimited; normal player -> migration handles it on login.
-        if (ph.has(PERM_BASE + caseId.toLowerCase(Locale.ROOT))) {
-            Player online = Bukkit.getPlayer(id);
-            return (online != null && online.isOp()) ? Integer.MAX_VALUE : 0;
-        }
+        // 4) Base right present but no counter found anywhere: OP -> unlimited, others -> 0.
+        boolean baseRight = openall || ph.has(CASE_BASE + pid);
+        if (baseRight && online != null && online.isOp()) return Integer.MAX_VALUE;
         return 0;
     }
 
@@ -148,37 +165,38 @@ public final class DataManager {
     /** Adds (or overwrites with positive delta) opens. Async persisted. */
     public void addOpens(UUID id, String name, String caseId, int amount) {
         caseId = caseId.toLowerCase(Locale.ROOT);
-        int cur = getAvailableRawCounter(id, caseId);
+        int cur = getAvailableRawCounter(id, permIdOf(caseId));
         setOpens(id, name, caseId, cur + amount);
     }
 
-    /** Sets exact remaining count and persists (LP node rewrite or storage). */
+    /** Sets exact remaining count and persists (LP node rewrite or storage). Keyed by permId. */
     public void setOpens(UUID id, String name, String caseId, int newAmount) {
         caseId = caseId.toLowerCase(Locale.ROOT);
-        String perm = PERM_BASE + caseId;
+        String pid = permIdOf(caseId);
+        String countPerm = COUNT_BASE + pid;
         if (usingLuckPerms()) {
             LuckPerms lp = lpApi();
             try {
                 User u = lp.getUserManager().getUser(id);
                 if (u != null) {
                     Set<Node> toRemove = new HashSet<>();
-                    for (Node n : u.getNodes())
-                        if (n.getKey().startsWith(perm + ".")) toRemove.add(n);
-                    // Storage.set removes one Node at a time - loop instead of passing the Set.
+                    for (Node n : u.data())
+                        if (n.getKey().startsWith(countPerm + ".") || n.getKey().equals(countPerm)) toRemove.add(n);
+                    // NodeMap.remove removes one Node at a time - loop instead of passing the Set.
                     for (Node n : toRemove) u.data().remove(n);
                     if (newAmount > 0)
-                        u.data().add(Node.builder(perm + "." + newAmount).value(true).build());
+                        u.data().add(Node.builder(countPerm + "." + newAmount).value(true).build());
                     else
-                        u.data().add(Node.builder(perm).value(false).build()); // explicit deny at 0
+                        u.data().add(Node.builder(countPerm).value(false).build()); // explicit deny at 0
                     lp.getUserManager().saveUser(u);
-                    cache.computeIfAbsent(id, k -> new HashMap<>()).put(caseId, Math.max(0, newAmount));
+                    cache.computeIfAbsent(id, k -> new HashMap<>()).put(pid, Math.max(0, newAmount));
                     return;
                 }
             } catch (Throwable t) {
                 plugin.getLogger().warning("LuckPerms write failed: " + t.getMessage());
             }
         }
-        cache.computeIfAbsent(id, k -> new HashMap<>()).put(caseId, Math.max(0, newAmount));
+        cache.computeIfAbsent(id, k -> new HashMap<>()).put(pid, Math.max(0, newAmount));
         enqueueSave(id);
     }
 
@@ -218,43 +236,53 @@ public final class DataManager {
     }
 
     /**
-     * Bare permission nodes without a number (casesystem.case.open.&lt;id&gt;) are migrated
-     * ON LOGIN for non-OP players: the node is revoked instantly and +1 open is credited
-     * to the counter. OPs keep the bare node as unlimited access.
+     * Bare permission nodes without a number are migrated ON LOGIN for non-OP players:
+     *  - legacy "casesystem.case.open.&lt;id&gt;"           -> revoked, +1 to the counter of that case
+     *  - new-style "casesystem.case.&lt;pid&gt;"             -> revoked, +1 to the counter of that case
+     * OPs keep bare nodes as unlimited access. Numbered nodes (count.<pid>.<n>) are never touched.
      */
     private void migrateBareNodes(UUID id, String name) {
         Player p = Bukkit.getPlayer(id);
         if (p == null || p.isOp()) return;
-        for (String caseId : plugin.cases().getCases().keySet()) {
-            String perm = PERM_BASE + caseId.toLowerCase(Locale.ROOT);
+        for (CaseManager.CaseDef c : plugin.cases().getCases().values()) {
+            String caseId = c.id;
+            String pid = c.permId.toLowerCase(Locale.ROOT);
+            String legacy = PERM_BASE + caseId;
+            String bareNew = CASE_BASE + pid;
             if (usingLuckPerms()) {
                 try {
                     User u = lpApi().getUserManager().getUser(id);
                     if (u == null) continue;
-                    Node bare = null;
+                    List<Node> bareNodes = new ArrayList<>();
                     boolean hasNumbered = false;
-                    for (Node n : u.getNodes()) {
-                        if (n.getKey().equals(perm) && n.getValue()) bare = n;
-                        else if (n.getKey().startsWith(perm + ".") && n.getValue()) hasNumbered = true;
+                    for (Node n : u.getDistinctNodes()) {
+                        String k = n.getKey();
+                        if (!n.getValue()) continue;
+                        if (k.equals(legacy) || k.equals(bareNew)) bareNodes.add(n);
+                        else if ((k.startsWith(legacy + ".") && !k.startsWith(CASE_BASE))
+                                || k.startsWith(COUNT_BASE + pid + ".")) hasNumbered = true;
                     }
-                    if (bare != null) {
-                        u.data().remove(bare);
-                        int cur = hasNumbered ? getAvailable(id, name, caseId)
-                                : cache.getOrDefault(id, new HashMap<>()).getOrDefault(caseId, 0);
-                        lpApi().getUserManager().saveUser(u);
-                        setOpens(id, name, caseId, Math.max(0, cur) + 1);
-                        plugin.getLogger().info("[CaseSystem] Migrated bare node '" + perm + "' for " + name + " -> counter+1");
-                    }
+                    if (bareNodes.isEmpty()) continue;
+                    for (Node n : bareNodes) u.data().remove(n);
+                    int cur = hasNumbered ? getAvailable(id, name, caseId)
+                            : cache.getOrDefault(id, new HashMap<>()).getOrDefault(pid, 0);
+                    lpApi().getUserManager().saveUser(u);
+                    setOpens(id, name, caseId, Math.max(0, cur) + 1);
+                    plugin.getLogger().info("[CaseSystem] Migrated bare node(s) for '" + name + "' case '" + caseId + "' -> counter+1");
                 } catch (Throwable t) {
                     plugin.getLogger().warning("Bare-node migration failed for " + name + ": " + t.getMessage());
                 }
             } else {
                 // No LuckPerms: check effective vanilla permissions once per login.
-                if (p.hasPermission(perm) && !p.hasPermission(perm + ".*")) {
-                    p.removeAttachment(p.addAttachment(plugin, perm, false)); // revoke presence locally
-                    int cur = cache.getOrDefault(id, new HashMap<>()).getOrDefault(caseId, 0);
+                boolean hadLegacy = p.hasPermission(legacy) && !p.hasPermission(legacy + ".*");
+                boolean hadBareNew = p.hasPermission(bareNew) && !p.hasPermission(bareNew + ".*")
+                        && !p.hasPermission(COUNT_BASE + pid + ".*");
+                if (hadLegacy || hadBareNew) {
+                    if (hadLegacy) p.removeAttachment(p.addAttachment(plugin, legacy, false));
+                    if (hadBareNew) p.removeAttachment(p.addAttachment(plugin, bareNew, false));
+                    int cur = cache.getOrDefault(id, new HashMap<>()).getOrDefault(pid, 0);
                     setOpens(id, name, caseId, cur + 1);
-                    plugin.getLogger().info("[CaseSystem] Migrated bare perm '" + perm + "' for " + name + " -> counter+1");
+                    plugin.getLogger().info("[CaseSystem] Migrated bare perm for '" + name + "' case '" + caseId + "' -> counter+1");
                 }
             }
         }
