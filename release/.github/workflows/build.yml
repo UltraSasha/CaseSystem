@@ -1,0 +1,54 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # ProtocolLib is published only as a GitHub release artifact (no Maven repo).
+      # build.gradle resolves it via `compileOnly fileTree('libs')`, so we vendor the jar here.
+      - name: Download ProtocolLib (compileOnly)
+        run: |
+          mkdir -p libs
+          if [ ! -f libs/ProtocolLib-5.3.0.jar ]; then
+            curl -fsSL -o libs/ProtocolLib-5.3.0.jar \
+              https://github.com/dmulloy2/ProtocolLib/releases/download/5.3.0/ProtocolLib.jar
+          fi
+
+      - name: Build with Gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          arguments: build --no-daemon
+
+      - name: Upload JAR as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CaseSystem-jar
+          path: build/libs/*.jar
+          if-no-files-found: error
+
+      - name: Create GitHub Release (only on tags v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/libs/*.jar
+          generate_release_notes: true
