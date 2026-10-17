@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Plugin entry point: bootstrap, command /cs (aliases /case, /casesystem),
+ * Plugin entry point: bootstrap, command /cs,
  * admin subcommands, resource-pack delivery on join and storage sync hooks.
  *
  * Sub-managers: {@link CaseManager} (config model + GUIs),

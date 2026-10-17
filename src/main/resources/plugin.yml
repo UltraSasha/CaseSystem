@@ -12,7 +12,7 @@ softdepend:
 commands:
   cs:
     description: Open the CaseSystem GUI.
-    aliases: [case, casesystem]
+
 
 permissions:
   casesystem.admin:
