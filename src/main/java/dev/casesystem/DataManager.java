@@ -1,9 +1,5 @@
 package dev.casesystem;
 
-import net.luckperms.api.LuckPerms;
-import net.luckperms.api.LuckPermsProvider;
-import net.luckperms.api.model.user.User;
-import net.luckperms.api.node.Node;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -81,9 +77,98 @@ public final class DataManager {
     public String storageType() { return storage.name(); }
     public boolean usingLuckPerms() { return luckPerms && lpApi() != null; }
 
-    private LuckPerms lpApi() {
+    // ---------------------------------------------------------------------
+    // LuckPerms access via REFLECTION ONLY.
+    // The plugin must load on servers WITHOUT LuckPerms installed; direct
+    // compile-time references to net.luckperms.api.* would make the JVM
+    // throw NoClassDefFoundError while verifying DataManager itself.
+    // Every call below is guarded by try/catch(Throwable).
+    // ---------------------------------------------------------------------
+
+    private Object lpApi() {
         if (!luckPerms) return null;
-        try { return LuckPermsProvider.get(); } catch (Throwable t) { return null; }
+        try {
+            Class<?> provider = Class.forName("net.luckperms.api.LuckPermsProvider");
+            return provider.getMethod("get").invoke(null);
+        } catch (Throwable t) { return null; }
+    }
+
+    /** LP User of an online player, or null. */
+    private static Object lpUser(Object api, UUID id) {
+        try {
+            Object um = api.getClass().getMethod("getUserManager").invoke(api);
+            return um.getClass().getMethod("getUser", UUID.class).invoke(um, id);
+        } catch (Throwable t) { return null; }
+    }
+
+    /** All distinct nodes of a User as List<Object> (net.luckperms.api.node.Node). */
+    @SuppressWarnings("unchecked")
+    private static java.util.List<Object> lpNodes(Object user) {
+        try {
+            Object res = user.getClass().getMethod("getDistinctNodes").invoke(user);
+            if (res instanceof java.util.List) return (java.util.List<Object>) res;
+            if (res instanceof java.util.Collection) return new ArrayList<>((java.util.Collection<Object>) res);
+        } catch (Throwable ignored) {}
+        return java.util.Collections.emptyList();
+    }
+
+    /** node.getKey() */
+    private static String lpKey(Object node) {
+        try { return (String) node.getClass().getMethod("getKey").invoke(node); }
+        catch (Throwable t) { return ""; }
+    }
+
+    /** node.getValue() */
+    private static boolean lpValue(Object node) {
+        try { return (Boolean) node.getClass().getMethod("getValue").invoke(node); }
+        catch (Throwable t) { return false; }
+    }
+
+    /** data().remove(node) / data().add(node) */
+    private static void lpRemove(Object user, Object node) {
+        try {
+            Object data = user.getClass().getMethod("data").invoke(user);
+            Class<?> nodeCls = node.getClass();
+            for (java.lang.reflect.Method m : data.getClass().getMethods()) {
+                if (m.getName().equals("remove") && m.getParameterCount() == 1
+                        && m.getParameterTypes()[0].isAssignableFrom(nodeCls)) {
+                    m.invoke(data, node); return;
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void lpAdd(Object user, Object node) {
+        try {
+            Object data = user.getClass().getMethod("data").invoke(user);
+            Class<?> nodeCls = node.getClass();
+            for (java.lang.reflect.Method m : data.getClass().getMethods()) {
+                if (m.getName().equals("add") && m.getParameterCount() == 1
+                        && m.getParameterTypes()[0].isAssignableFrom(nodeCls)) {
+                    m.invoke(data, node); return;
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** Node.builder(key).value(v).build() -> Object (Node), or null on failure. */
+    private static Object lpNode(String key, boolean value) {
+        try {
+            Class<?> builder = Class.forName("net.luckperms.api.node.NodeBuilder");
+            Class<?> nodeCls = Class.forName("net.luckperms.api.node.Node");
+            Object b = nodeCls.getMethod("builder", String.class).invoke(null, key);
+            builder.getMethod("value", boolean.class).invoke(b, value);
+            return builder.getClass().getMethod("build").invoke(b);
+        } catch (Throwable t) { return null; }
+    }
+
+    /** getUserManager().saveUser(user) */
+    private static void lpSave(Object api, Object user) {
+        try {
+            Object um = api.getClass().getMethod("getUserManager").invoke(api);
+            um.getClass().getMethod("saveUser", Class.forName("net.luckperms.api.model.user.User"))
+              .invoke(um, user);
+        } catch (Throwable ignored) {}
     }
 
     // ------------------------------------------------------------------
@@ -110,12 +195,12 @@ public final class DataManager {
         // 1) LuckPerms numbered counter node: casesystem.count.<pid>.<amount>
         if (usingLuckPerms()) {
             try {
-                User u = lpApi().getUserManager().getUser(id);
+                Object u = lpUser(lpApi(), id);
                 if (u != null) {
                     int best = -1;
-                    for (Node n : u.getDistinctNodes()) {
-                        String k = n.getKey();
-                        if (!n.getValue()) continue;
+                    for (Object n : lpNodes(u)) {
+                        String k = lpKey(n);
+                        if (!lpValue(n)) continue;
                         if (k.startsWith(COUNT_BASE + pid + ".")) {
                             try { best = Math.max(best, Integer.parseInt(k.substring((COUNT_BASE + pid).length() + 1))); }
                             catch (NumberFormatException ignored) {}
@@ -176,20 +261,21 @@ public final class DataManager {
         String pid = permIdOf(caseId);
         String countPerm = COUNT_BASE + pid;
         if (usingLuckPerms()) {
-            LuckPerms lp = lpApi();
+            Object lp = lpApi();
             try {
-                User u = lp.getUserManager().getUser(id);
+                Object u = lpUser(lp, id);
                 if (u != null) {
-                    Set<Node> toRemove = new HashSet<>();
-                    for (Node n : u.getDistinctNodes())
-                        if (n.getKey().startsWith(countPerm + ".") || n.getKey().equals(countPerm)) toRemove.add(n);
-                    // NodeMap.remove removes one Node at a time - loop instead of passing the Set.
-                    for (Node n : toRemove) u.data().remove(n);
-                    if (newAmount > 0)
-                        u.data().add(Node.builder(countPerm + "." + newAmount).value(true).build());
-                    else
-                        u.data().add(Node.builder(countPerm).value(false).build()); // explicit deny at 0
-                    lp.getUserManager().saveUser(u);
+                    List<Object> toRemove = new ArrayList<>();
+                    for (Object n : lpNodes(u)) {
+                        String k = lpKey(n);
+                        if (k.startsWith(countPerm + ".") || k.equals(countPerm)) toRemove.add(n);
+                    }
+                    // NodeMap.remove removes one node at a time - loop instead of passing the Set.
+                    for (Object n : toRemove) lpRemove(u, n);
+                    Object newNode = lpNode(newAmount > 0 ? countPerm + "." + newAmount : countPerm,
+                                            newAmount > 0); // explicit deny at 0
+                    if (newNode != null) lpAdd(u, newNode);
+                    lpSave(lp, u);
                     cache.computeIfAbsent(id, k -> new HashMap<>()).put(pid, Math.max(0, newAmount));
                     return;
                 }
@@ -252,23 +338,22 @@ public final class DataManager {
             String bareNew = CASE_BASE + pid;
             if (usingLuckPerms()) {
                 try {
-                    User u = lpApi().getUserManager().getUser(id);
+                    Object u = lpUser(lpApi(), id);
                     if (u == null) continue;
-                    List<Node> bareNodes = new ArrayList<>();
+                    List<Object> bareNodes = new ArrayList<>();
                     boolean hasNumbered = false;
-                    for (Node n : u.getDistinctNodes()) {
-                        String k = n.getKey();
-                        if (!n.getValue()) continue;
+                    for (Object n : lpNodes(u)) {
+                        String k = lpKey(n);
+                        if (!lpValue(n)) continue;
                         if (k.equals(legacy) || k.equals(bareNew)) bareNodes.add(n);
                         else if ((k.startsWith(legacy + ".") && !k.startsWith(CASE_BASE))
                                 || k.startsWith(COUNT_BASE + pid + ".")) hasNumbered = true;
                     }
                     if (bareNodes.isEmpty()) continue;
-                    for (Node n : bareNodes) u.data().remove(n);
+                    for (Object n : bareNodes) lpRemove(u, n);
                     int cur = hasNumbered ? getAvailable(id, name, caseId)
                             : cache.getOrDefault(id, new HashMap<>()).getOrDefault(pid, 0);
-                    lpApi().getUserManager().saveUser(u);
-                    setOpens(id, name, caseId, Math.max(0, cur) + 1);
+                    setOpens(id, name, caseId, Math.max(0, cur) + 1); // also saves the user via LP API
                     plugin.getLogger().info("[CaseSystem] Migrated bare node(s) for '" + name + "' case '" + caseId + "' -> counter+1");
                 } catch (Throwable t) {
                     plugin.getLogger().warning("Bare-node migration failed for " + name + ": " + t.getMessage());
