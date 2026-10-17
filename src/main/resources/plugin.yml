@@ -13,6 +13,7 @@ commands:
   cs:
     description: Open the CaseSystem GUI.
 
+
 permissions:
   casesystem.admin:
     description: Access to admin subcommands (reload/give/list/debug).

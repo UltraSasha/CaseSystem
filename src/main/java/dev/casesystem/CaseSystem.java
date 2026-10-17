@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Plugin entry point: bootstrap, command /cs (aliases /case, /casesystem),
+ * Plugin entry point: bootstrap, command /cs,
  * admin subcommands, resource-pack delivery on join and storage sync hooks.
  *
  * Sub-managers: {@link CaseManager} (config model + GUIs),
@@ -55,7 +55,15 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
         this.rewardManager    = new RewardManager(this);
         this.animationManager = new AnimationManager(this);
 
-        Bukkit.getPluginCommand("cs").setTabCompleter(this);
+        org.bukkit.command.PluginCommand csCmd = Bukkit.getPluginCommand("cs");
+        if (csCmd != null) {
+            csCmd.setExecutor(this);
+            csCmd.setTabCompleter(this);
+        } else {
+            getLogger().warning("[CaseSystem] Command 'cs' is not registered - plugin.yml is missing from the JAR "
+                    + "(the jar in plugins/ was built without processResources or replaced manually). "
+                    + "Build a fresh jar with './gradlew build' and copy ONLY build/libs/CaseSystem-1.0.0.jar.");
+        }
         Bukkit.getPluginManager().registerEvents(this, this);
         Bukkit.getPluginManager().registerEvents(caseManager, this);
 

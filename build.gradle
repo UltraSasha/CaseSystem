@@ -34,15 +34,9 @@ compileJava {
     options.encoding = 'UTF-8'
 }
 
-processResources {
-    filesMatching('plugin.yml') {
-        expand(
-            'name'   : rootProject.name,
-            'version': project.version,
-            'main'   : 'dev.casesystem.CaseSystem'
-        )
-    }
-}
+// plugin.yml содержит захардкоженные name/version/main — expand() не нужен.
+// Если он остался в вашей копии build.gradle — УДАЛИТЕ блок processResources { ... }:
+// без него JAR всё равно включает ресурсы (стандартное поведение java-плагина Gradle).
 
 jar {
     archiveBaseName = 'CaseSystem'
