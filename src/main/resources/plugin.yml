@@ -1,6 +1,6 @@
-name: ${name}
-version: '${version}'
-main: ${main}
+name: CaseSystem
+version: '1.0.0'
+main: dev.casesystem.CaseSystem
 api-version: '1.19'
 author: CaseSystemTeam
 description: Case opening system with 3D animations, rarities, permissions and full config support (Paper 1.19.2 - 1.21.1).
