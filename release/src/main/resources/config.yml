@@ -1,0 +1,136 @@
+# ============================================================
+#  CaseSystem - full configuration example
+#  Works on Paper 1.19.2 and 1.21.1 (single JAR).
+#
+#  Permission model:
+#     casesystem.case.open.<case_id>.<amount>
+#     e.g. casesystem.case.open.common.10  -> 10 opens of "common"
+#     Every open decreases <amount> by 1 (via LuckPerms API if
+#     present, otherwise via the storage below).
+# ============================================================
+
+storage:
+  # JSON or SQLITE
+  type: JSON
+  file: data.json
+  sqlite-file: data.db
+  # Sync per-player counters from/to LuckPerms on join/quit
+  # (only when LuckPerms is NOT installed; keeps numbers safe).
+  sync-on-login-logout: true
+
+resource-pack:
+  enabled: false
+  url: "https://your-host.example/casesystem.zip"
+  hash: ""            # optional sha1 hex, empty = no checksum
+  message: "&bЗагружаем ресурспак CaseSystem..."
+
+animation:
+  # auto | 3d | gui
+  #   auto -> native ItemDisplay on 1.19.4+, ProtocolLib fake
+  #          ItemDisplay on 1.19.2 (if ProtocolLib installed),
+  #          flat GUI roulette otherwise.
+  type: auto
+  phase1-ticks: 40          # rarity reel
+  phase2-ticks: 60          # item reel (inside chosen rarity)
+  tick-sound: "BLOCK_NOTE_BLOCK_PLING"
+  final-sound: "ENTITY_PLAYER_LEVELUP"
+  particle: "VILLAGER_HAPPY"
+  # Height of the floating display above the player's eyes.
+  display-height: 1.8
+
+gui:
+  main-title: "&8Кейсы"
+  detail-title: "&8Кейс: &f{case}"
+  roulette-title: "&8Открытие&7..."
+  rows: 6
+  filler: BLACK_STAINED_GLASS_PANE
+  # Show the contents list (rarities + items + drop %) in the
+  # case-detail GUI. Can be overridden per case with 'show-contents'.
+  show-contents: true
+
+cases:
+  common:
+    name: "&fОбычный кейс"
+    icon: LEATHER_HORSE_ARMOR
+    custom-model-data: 1001
+    show-contents: true
+    description:
+      - "&7Простой кейс с базовыми наградами."
+      - "&eЦена: &f1 ключ"
+    rarities:
+      common:
+        weight: 70
+        color: "&f"
+        display-item: GRAY_DYE
+      rare:
+        weight: 25
+        color: "&b"
+        display-item: LIGHT_BLUE_DYE
+      epic:
+        weight: 5
+        color: "&5"
+        display-item: PURPLE_DYE
+    items:
+      iron_block:
+        rarity: common
+        weight: 60
+        material: IRON_BLOCK
+        name: "&fЖелезный блок"
+        lore: ["&7Просто блок железа."]
+        commands:
+          - "give %player% iron_block 1"
+      golden-apple:
+        rarity: common
+        weight: 40
+        material: GOLDEN_APPLE
+        name: "&eЗолотое яблоко"
+        commands:
+          - "give %player% golden_apple 2"
+      diamond:
+        rarity: rare
+        weight: 70
+        material: DIAMOND
+        name: "&bАлмаз"
+        custom-model-data: 1502
+        commands:
+          - "give %player% diamond 3"
+      enchanted-book:
+        rarity: rare
+        weight: 30
+        material: ENCHANTED_BOOK
+        name: "&bКнига заклинаний"
+        enchantments:
+          - "UNBREAKING:3"
+        commands:
+          - "enchant %player% unbreaking 3"
+      netherite-scrap:
+        rarity: epic
+        weight: 100
+        material: NETHERITE_SCRAP
+        name: "&5Нежитовый лом"
+        glow: true
+        commands:
+          - "give %player% netherite_scrap 1"
+          - "broadcast %player% &5получил &5Нежитовый лом &5из кейса %case%!"
+
+  legendary:
+    name: "&6Легендарный кейс"
+    icon: CHEST
+    custom-model-data: 1002
+    show-contents: false
+    description:
+      - "&6Только для избранных."
+    rarities:
+      mythic:
+        weight: 100
+        color: "&6"
+        display-item: GOLD_INGOT
+    items:
+      dragon-egg:
+        rarity: mythic
+        weight: 100
+        material: DRAGON_EGG
+        name: "&6Яйцо дракона"
+        glow: true
+        commands:
+          - "give %player% dragon_egg 1"

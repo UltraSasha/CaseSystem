@@ -1,0 +1,57 @@
+plugins {
+    id 'java'
+}
+
+group = 'dev.casesystem'
+version = '1.0.0'
+description = 'Case opening system with 3D animations for Paper 1.19.2 - 1.21.1'
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    maven { url = 'https://repo.extendedclip.com/content/repositories/placeholderapi/' } // PlaceholderAPI
+    maven { url = 'https://jitpack.io' }                                // LuckPerms (via PaperMC mirrors also work)
+}
+
+dependencies {
+    // Core API — not shaded, provided by the server at runtime.
+    compileOnly 'io.papermc.paper:paper-api:1.19.2-R0.1-SNAPSHOT'
+    // Optional integrations — all compileOnly, plugin must run without them.
+    // ProtocolLib is published only as a GitHub release artifact; CI downloads it into libs/.
+    compileOnly fileTree('libs') { include '*.jar' }
+    compileOnly 'me.clip:placeholderapi:2.11.6'
+    compileOnly 'net.luckperms:api:5.4'
+}
+
+java {
+    toolchain {
+        // Compile with JDK 17 bytecode (runs on 1.19.2 and 1.21.1 servers alike).
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+compileJava {
+    options.encoding = 'UTF-8'
+}
+
+processResources {
+    filesMatching('plugin.yml') {
+        expand(
+            'name'   : rootProject.name,
+            'version': project.version,
+            'main'   : 'dev.casesystem.CaseSystem'
+        )
+    }
+}
+
+jar {
+    archiveBaseName = 'CaseSystem'
+    manifest {
+        attributes(
+            'Implementation-Title': rootProject.name,
+            'Implementation-Version': project.version
+        )
+    }
+    // No shadowJar needed: every dependency is compileOnly and provided by the server.
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}

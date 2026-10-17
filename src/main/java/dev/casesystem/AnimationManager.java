@@ -338,7 +338,7 @@ public final class AnimationManager {
             if (!protocolLibPresent) return;
             try {
                 ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                PacketContainer spawn = pm.createPacket(PacketType.Play.Server.SPAWN_ENTITY);
+                com.comphenix.protocol.events.PacketContainer spawn = pm.createPacket(PacketType.Play.Server.SPAWN_ENTITY);
                 // 1.19 packet fields: id(VarInt), uuid, type(VarInt), x,y,z(double),
                 // pitch(byte), yaw(byte), data(int), velocity(vector)
                 spawn.getIntegers().write(0, entityId);
@@ -372,7 +372,7 @@ public final class AnimationManager {
             if (!protocolLibPresent) return;
             try {
                 ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                PacketContainer tele = pm.createPacket(PacketType.Play.Server.ENTITY_TELEPORT);
+                com.comphenix.protocol.events.PacketContainer tele = pm.createPacket(PacketType.Play.Server.ENTITY_TELEPORT);
                 tele.getIntegers().write(0, entityId);
                 tele.getDoubles().write(0, at.getX()).write(1, at.getY()).write(2, at.getZ());
                 pm.sendServerPacket(p, tele);
@@ -384,7 +384,7 @@ public final class AnimationManager {
             if (p == null || !protocolLibPresent) return;
             try {
                 ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                PacketContainer rem = pm.createPacket(PacketType.Play.Server.ENTITY_DESTROY);
+                com.comphenix.protocol.events.PacketContainer rem = pm.createPacket(PacketType.Play.Server.ENTITY_DESTROY);
                 boolean sent = false;
                 // Modern form: NMS IntList field.
                 for (String cls : new String[]{"net.minecraft.util.IntList", "net.minecraft.nbt.NBTProcessReadFinalizeTag"}) {
@@ -444,7 +444,7 @@ public final class AnimationManager {
 
         private void sendMetadataItems(ProtocolManager pm, Player p, int entityId, Object[] items) {
             try {
-                PacketContainer meta = pm.createPacket(PacketType.Play.Server.ENTITY_METADATA);
+                com.comphenix.protocol.events.PacketContainer meta = pm.createPacket(PacketType.Play.Server.ENTITY_METADATA);
                 meta.getIntegers().write(0, entityId);
                 Object handle = meta.getHandle();
                 Object arr = Array.newInstance(items.getClass().getComponentType(), items.length);

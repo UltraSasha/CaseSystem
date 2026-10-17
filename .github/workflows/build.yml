@@ -24,6 +24,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # ProtocolLib is published only as a GitHub release artifact (no Maven repo).
+      # build.gradle resolves it via `compileOnly fileTree('libs')`, so we vendor the jar here.
+      - name: Download ProtocolLib (compileOnly)
+        run: |
+          mkdir -p libs
+          if [ ! -f libs/ProtocolLib-5.3.0.jar ]; then
+            curl -fsSL -o libs/ProtocolLib-5.3.0.jar \
+              https://github.com/dmulloy2/ProtocolLib/releases/download/5.3.0/ProtocolLib.jar
+          fi
+
       - name: Build with Gradle
         uses: gradle/gradle-build-action@v3
         with:

@@ -166,8 +166,10 @@ public final class CaseManager implements Listener {
                         CaseSystem.Messages.color(ic.getString("name", "&f" + iid)),
                         colorizeList(lore));
                 if (ic.getBoolean("glow", false)) {
+                    // MENDING exists in the 1.19.2 API and on 1.21.1; combined with
+                    // HIDE_ENCHANTS it gives a pure visual "glow" without changing gameplay.
                     ItemMeta gm = item.getItemMeta();
-                    if (gm != null) { gm.addEnchant(Enchantment.UNBREAKING, 1, true); gm.addItemFlags(ItemFlag.HIDE_ENCHANTS); item.setItemMeta(gm); }
+                    if (gm != null) { gm.addEnchant(Enchantment.MENDING, 1, true); gm.addItemFlags(ItemFlag.HIDE_ENCHANTS); item.setItemMeta(gm); }
                 }
                 List<String> cmds = new ArrayList<>(ic.getStringList("commands"));
                 def.items.add(new ItemDef(iid.toLowerCase(Locale.ROOT), rarityId, weight, tagCommands(item, cmds), cmds));
