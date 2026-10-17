@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -180,7 +181,7 @@ public final class DataManager {
                 User u = lp.getUserManager().getUser(id);
                 if (u != null) {
                     Set<Node> toRemove = new HashSet<>();
-                    for (Node n : u.data())
+                    for (Node n : u.getDistinctNodes())
                         if (n.getKey().startsWith(countPerm + ".") || n.getKey().equals(countPerm)) toRemove.add(n);
                     // NodeMap.remove removes one Node at a time - loop instead of passing the Set.
                     for (Node n : toRemove) u.data().remove(n);

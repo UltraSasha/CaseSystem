@@ -202,6 +202,7 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                     sender.sendMessage(Messages.get("list-entry")
                             .replace("%case%", c.id)
                             .replace("%available%", avail)
+                            .replace("%perm%", c.permId)
                             .replace("%rarities%", rs.toString()));
                 }
                 return true;
@@ -344,9 +345,9 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
             List<String> raw = yaml.getStringList(key);
             if (raw.isEmpty()) {
                 raw = switch (key) {
-                    case "gui-main-entry-lore" -> List.of("&7Открытий: &e%available%", "", "%desc%", "&8Кликните для просмотра");
-                    case "gui-detail-lore" -> List.of("&7Доступно открытий: &e%available%", "", "%desc%", "&a▶ Кликните по кейсу,", "&aчтобы открыть его");
-                    case "gui-rarity-lore" -> List.of("%color%%rarity%", "&7Шанс редкости: &e%percent%", "&7Предметов: &f%count%", "", "%items%");
+                    case "gui-main-entry-lore" -> List.of("&7Открытий: &e%available%", "&7Редкостей: &f%rarities% &8| &7Предметов: &f%items%", "", "%desc%", "", "&8Кликните для просмотра");
+                    case "gui-detail-lore" -> List.of("&7Доступно открытий: &e%available%", "&7Право: &f%perm%", "", "%desc%", "", "&a▶ Кликните по кейсу,", "&aчтобы открыть его");
+                    case "gui-rarity-lore" -> List.of("&7Шанс редкости: &e%percent%", "&7Предметов: &f%count%", "", "%items%");
                     default -> List.of();
                 };
             }
