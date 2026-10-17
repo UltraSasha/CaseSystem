@@ -246,7 +246,9 @@ public final class CaseManager implements Listener {
         fill(inv, cfg);
         int slot = 10;
         for (CaseDef c : cases.values()) {
-            if (!p.hasPermission(DataManager.PERM_BASE + c.id)) continue; // presence check only for listing
+            // Single source of truth: LuckPerms numbered nodes / storage counter / plain node.
+            // (Previously this required the bare node casesystem.case.open.<id>, which is NOT
+            // implied by casesystem.case.open.<id>.5 - so LP grants showed no cases in GUI.)
             int avail = plugin.data().getAvailable(p.getUniqueId(), p.getName(), c.id);
             if (avail <= 0) continue;
             ItemStack it = c.icon.clone();
@@ -405,7 +407,6 @@ public final class CaseManager implements Listener {
     /** Entry point for an actual open attempt (permission + counter check). */
     public void beginOpen(Player p, CaseDef c) {
         if (!plugin.anim().canStart(p)) { p.sendMessage(CaseSystem.Messages.msg("opening-busy")); return; }
-        if (!p.hasPermission(DataManager.PERM_BASE + c.id)) { p.sendMessage(CaseSystem.Messages.msg("no-permission")); return; }
         if (!plugin.data().consume(p.getUniqueId(), p.getName(), c.id)) {
             p.sendMessage(CaseSystem.Messages.get("no-rights").replace("%case%", c.name));
             return;

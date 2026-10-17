@@ -102,6 +102,11 @@ public final class DataManager {
         Map<String, Integer> m = cache.get(id);
         if (m != null && m.containsKey(caseId)) return Math.max(0, m.get(caseId));
         PlayerHolder ph = new PlayerHolder(id, name);
+        // 1) numbered node granted directly via vanilla/LuckPerms perm system, e.g. ...open.common.5
+        for (String s : ph.grantedSuffixes(perm)) {
+            try { int v = Integer.parseInt(s); if (v > 0) return v; } catch (NumberFormatException ignored) {}
+        }
+        // 2) plain presence of the base node -> unlimited
         return ph.has(perm) ? Integer.MAX_VALUE : 0;
     }
 
@@ -164,6 +169,8 @@ public final class DataManager {
     /** Called on join: ensure cache exists; sync-on-login can pull fresh data. */
     public void onLogin(UUID id, String name) {
         if (plugin.getConfig().getBoolean("storage.sync-on-login-logout", true)) preload(id, name);
+        // Do NOT clobber the LuckPerms counter with an empty map: it would make
+        // getAvailable() return 0 and hide all cases in the GUI.
         cache.computeIfAbsent(id, k -> new HashMap<>());
     }
 
@@ -230,6 +237,19 @@ public final class DataManager {
             if (online != null) return online.hasPermission(perm);
             org.bukkit.permissions.Permission def = Bukkit.getPluginManager().getPermission(perm);
             return def != null && def.getDefault() == org.bukkit.permissions.PermissionDefault.TRUE;
+        }
+        /** Suffixes of granted permissions like casesystem.case.open.<caseId>.<suffix> (online only). */
+        java.util.List<String> grantedSuffixes(String permPrefix) {
+            java.util.List<String> out = new java.util.ArrayList<>();
+            Player online = Bukkit.getPlayer(id);
+            if (online == null) return out;
+            for (org.bukkit.permissions.PermissionAttachmentInfo info : online.getEffectivePermissions()) {
+                String k = info.getPermission().toLowerCase(Locale.ROOT);
+                if (!info.getValue()) continue;
+                if (k.startsWith(permPrefix.toLowerCase(Locale.ROOT) + "."))
+                    out.add(k.substring(permPrefix.length() + 1));
+            }
+            return out;
         }
     }
 
