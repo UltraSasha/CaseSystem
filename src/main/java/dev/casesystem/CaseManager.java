@@ -135,7 +135,7 @@ public final class CaseManager implements Listener {
             // Unique LETTERS-ONLY permission id: explicit 'permission-id:' or derived from the key.
             String permId = sanitizePermId(cs.getString("permission-id", ""), cid);
             if (permId.isEmpty()) permId = sanitizePermId("", "case" + cid);
-            String name = CaseSystem.Messages.get("case-name").replace("%case%", cs.getString("name", cid));
+            String name = CaseSystem.Messages.get("gui-case-name").replace("%case%", cs.getString("name", cid));
             List<String> desc = new ArrayList<>();
             for (String d : cs.getStringList("description")) desc.add(CaseSystem.Messages.color(d));
             boolean show = cs.contains("show-contents") ? cs.getBoolean("show-contents") : globalShow;

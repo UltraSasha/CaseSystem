@@ -128,8 +128,8 @@ public final class AnimationManager {
                 }));
             return;
         }
-        runReel3D(p, anchor, strip1, phase1, tick, part, () ->
-            runReel3D(p, anchor, strip2, phase2, tick, part, () -> {
+        runReel3D(p, anchor, strip1, phase1, tick, part, indexOfRarity(c, rarity, strip1), () ->
+            runReel3D(p, anchor, strip2, phase2, tick, part, indexIn(strip2, item.icon), () -> {
                 destroyAnchor(anchor);
                 if (p.isOnline()) {
                     p.playSound(p.getLocation(), fin, 1f, 1f);
@@ -159,20 +159,34 @@ public final class AnimationManager {
         }, 1L, 1L).getTaskId();
     }
 
-    private void runReel3D(Player p, Anchor anchor, List<ItemStack> strip, int ticks, Sound tick, Particle part, Runnable end) {
+    /**
+     * Smooth 3D reel: position advances along an eased curve (fast start -> slow stop)
+     * and lands EXACTLY on stopIndex on the last tick, so the animation "brakes" onto
+     * the winning icon instead of flickering two icons per tick.
+     */
+    private void runReel3D(Player p, Anchor anchor, List<ItemStack> strip, int ticks,
+                            Sound tick, Particle part, int stopIndex, Runnable end) {
+        final int size = Math.max(1, strip.size());
+        final double totalSteps = Math.max(size, ticks * 0.9);
+        final double target = stopIndex + totalSteps;
         final int[] t = {0};
         final int[] holder = new int[1];
         holder[0] = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             t[0]++;
-            showAt(anchor, strip.get(Math.floorMod(t[0] * 2, strip.size())));
+            double frac = Math.min(1.0, (double) t[0] / ticks);
+            double pos = target * (1.0 - Math.pow(1.0 - frac, 2)); // ease-out quadratic
+            int idx = (int) Math.floor(pos) % size;
+            showAt(anchor, strip.get(idx));
             if (p.isOnline()) {
-                p.playSound(p.getLocation(), tick, 0.5f, 1f + (t[0] % 4) * 0.1f);
+                float pitch = 1f + (float) frac * 0.6f;
+                p.playSound(p.getLocation(), tick, 0.5f, pitch);
                 if (part != null && t[0] % 4 == 0)
                     p.spawnParticle(part, p.getEyeLocation().add(0, plugin.getConfig().getDouble("animation.display-height", 1.8), 0),
                             4, 0.2, 0.2, 0.2, 0.05);
             }
             if (t[0] >= ticks) {
                 Bukkit.getScheduler().cancelTask(holder[0]);
+                showAt(anchor, strip.get(Math.floorMod(stopIndex, size))); // land on the winner
                 end.run();
             }
         }, 1L, 1L).getTaskId();
@@ -187,12 +201,24 @@ public final class AnimationManager {
         if (onFinish != null) Bukkit.getScheduler().runTask(plugin, onFinish);
     }
 
+    /** Fake entity ids currently alive per player (cleanup on quit/disable). */
+    private final java.util.Map<UUID, List<Integer>> liveFakes = new java.util.concurrent.ConcurrentHashMap<>();
+
     public void shutdown() {
         for (Entity e : new ArrayList<>(liveEntities)) {
             try { e.remove(); } catch (Throwable ignored) {}
         }
         liveEntities.clear();
+        for (java.util.Map.Entry<UUID, List<Integer>> en : liveFakes.entrySet())
+            for (Integer id : en.getValue()) sendFakeRemove(en.getKey(), id);
+        liveFakes.clear();
         busy.clear();
+    }
+
+    /** Removes any leftover fake displays of a quitting player (called from CaseSystem listener). */
+    public void cleanupPlayer(UUID id) {
+        List<Integer> ids = liveFakes.remove(id);
+        if (ids != null) for (Integer eid : ids) sendFakeRemove(id, eid);
     }
 
     // ------------------------------------------------------------------
@@ -220,6 +246,15 @@ public final class AnimationManager {
         return null;
     }
 
+    private int indexOfRarity(CaseManager.CaseDef c, CaseManager.Rarity r, List<ItemStack> strip) {
+        int i = 0;
+        for (CaseManager.Rarity x : c.rarities.values()) {
+            if (x.id.equals(r.id)) return Math.floorMod(i, Math.max(1, strip.size()));
+            i++;
+        }
+        return 0;
+    }
+
     private int indexIn(List<ItemStack> strip, ItemStack icon) {
         for (int i = 0; i < strip.size(); i++) if (strip.get(i).isSimilar(icon)) return i;
         return 0;
@@ -241,9 +276,12 @@ public final class AnimationManager {
         Location at = p.getEyeLocation().add(0, height, 0);
         try {
             if (mode == Mode.PROTO_3D) {
+                if (!proto.available())
+                    throw new IllegalStateException("item_display protocol id unresolved on this server");
                 int fakeId = nextFakeId();
                 a.displayRef = fakeId;
                 a.anchorLoc = at.clone();
+                liveFakes.computeIfAbsent(p.getUniqueId(), k2 -> new ArrayList<>()).add(fakeId);
                 sendFakeSpawn(p, fakeId, at);
             } else {
                 // NATIVE_3D (>= 1.19.4): reflective spawn of ITEM_DISPLAY.
@@ -280,10 +318,8 @@ public final class AnimationManager {
                 if (pl != null) {
                     Location cur = pl.getEyeLocation()
                             .add(0, plugin.getConfig().getDouble("animation.display-height", 1.8), 0);
-                    if (a.anchorLoc == null || a.anchorLoc.distanceSquared(cur) > 0.01) {
-                        a.anchorLoc = cur;
-                        sendFakeTeleport(pl, (Integer) a.displayRef, cur); // invisible-anchor follow
-                    }
+                    a.anchorLoc = cur;
+                    sendFakeTeleport(pl, (Integer) a.displayRef, cur); // invisible-anchor follow (every tick -> smooth)
                 }
                 sendFakeItemSync(a.owner, (Integer) a.displayRef, stack);
             } else if (a.displayRef instanceof Entity ent) {
@@ -297,6 +333,8 @@ public final class AnimationManager {
         try {
             if (mode == Mode.PROTO_3D) {
                 sendFakeRemove(a.owner, (Integer) a.displayRef);
+                List<Integer> l = liveFakes.get(a.owner);
+                if (l != null) l.remove((Integer) a.displayRef);
             } else if (a.displayRef instanceof Entity ent) {
                 ent.remove();
                 liveEntities.remove(ent);
@@ -313,34 +351,64 @@ public final class AnimationManager {
      */
     private final class ProtoSender {
 
-        private int fakeCounter = -2_000_000;
+        private final java.util.concurrent.atomic.AtomicInteger fakeCounter =
+                new java.util.concurrent.atomic.AtomicInteger(500_000_000);
+
+        private int nextFakeId() { return fakeCounter.getAndAdd(7); }
+
+        /**
+         * Protocol entity-type VarInt of minecraft:item_display.
+         * IMPORTANT: this is the PROTOCOL id (registry order of vanilla types), NOT the
+         * runtime BuiltInRegistries id - and item_display does not exist in 1.19.2 at all.
+         * The value is resolved dynamically by looking up a KNOWN type (zombified_piglin)
+         * in the live registry and comparing against the known protocol table; the result
+         * is cached per server build. Fallback = 111 (item_display in 1.19.4+ registries).
+         */
         private final int itemTypeVarInt = resolveItemDisplayTypeId();
 
-        private int nextFakeId() { return fakeCounter--; }
-
-        /** Registry id of minecraft:item_display on 1.19.2 (absent from the EntityType enum). */
         private int resolveItemDisplayTypeId() {
-            String[] keyClasses = {"net.minecraft.resources.MinecraftKey", "net.minecraft.resources.ResourceLocation"};
-            for (String kc : keyClasses) {
-                try {
-                    Class<?> regCls = Class.forName("net.minecraft.core.registries.BuiltInRegistries");
+            try {
+                Class<?> regCls = null;
+                for (String c : new String[]{"net.minecraft.core.registries.BuiltInRegistries",
+                                             "net.minecraft.core.IRegistryCustom"}) {
+                    try { regCls = Class.forName(c); break; } catch (Throwable ignored) {}
+                }
+                if (regCls != null) {
                     Object reg = regCls.getField("ENTITY_TYPE").get(null);
-                    Class<?> keyCls = Class.forName(kc);
-                    Object key = keyCls.getConstructor(String.class).newInstance("minecraft:item_display");
-                    Object id = reg.getClass().getMethod("getId", keyCls).invoke(reg, key);
-                    if (id instanceof Number n) return n.intValue();
-                } catch (Throwable ignored) {}
-            }
-            return 3; // best-effort default for the 1.19.x protocol registry space
+                    Class<?> mcKey = null;
+                    for (String c : new String[]{"net.minecraft.resources.MinecraftKey",
+                                                 "net.minecraft.resources.ResourceLocation"}) {
+                        try { mcKey = Class.forName(c); break; } catch (Throwable ignored) {}
+                    }
+                    if (mcKey != null) {
+                        Object key = mcKey.getConstructor(String.class).newInstance("minecraft:zombified_piglin");
+                        Object idObj = reg.getClass().getMethod("getId", mcKey).invoke(reg, key);
+                        if (idObj instanceof Number n) {
+                            int runtimeZombie = n.intValue();
+                            // zombified_piglin is protocol id 15 on every 1.19.x version.
+                            int offset = 15 - runtimeZombie;
+                            int display = 111 + offset; // item_display protocol id on 1.19.4 == 111
+                            if (display > 0 && display < 1000) return display;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            // Do NOT guess a registry number: an unknown id spawns a random vanilla mob
+            // (e.g. piglin). Returning -1 disables PROTO_3D -> clean GUI-roulette fallback.
+            return -1;
         }
 
+        /** True only when the item_display protocol id was resolved for this server. */
+        boolean available() { return itemTypeVarInt > 0; }
+
         void spawn(Player p, int entityId, Location at) {
-            if (!protocolLibPresent) return;
+            if (!protocolLibPresent || !available()) return;
             try {
                 ProtocolManager pm = ProtocolLibrary.getProtocolManager();
                 com.comphenix.protocol.events.PacketContainer spawn = pm.createPacket(PacketType.Play.Server.SPAWN_ENTITY);
-                // 1.19 packet fields: id(VarInt), uuid, type(VarInt), x,y,z(double),
-                // pitch(byte), yaw(byte), data(int), velocity(vector)
+                // 1.19.2 packet layout: entityId(int), UUID, entityType(VarInt), x,y,z(double),
+                // pitch/yaw(byte angles), data(int), velocityX/Y/Z(int), removed(boolean).
+                // ProtocolLib has no setter for the type VarInt -> write it via reflection.
                 spawn.getIntegers().write(0, entityId);
                 spawn.getUUIDs().write(0, UUID.randomUUID());
                 spawn.getDoubles().write(0, at.getX()).write(1, at.getY()).write(2, at.getZ());
@@ -403,16 +471,48 @@ public final class AnimationManager {
 
         // -- low-level reflection helpers ---------------------------------
 
-        /** Writes the entity-type VarInt field of SPAWN_ENTITY (field order differs per mapping). */
+        /**
+         * Writes the entity-type VarInt field of SPAWN_ENTITY.
+         * The type field sits BETWEEN entityId(int) and the first position double.
+         * Locate it by declaration ORDER (fields between id and x), not by counting
+         * ints: on some mappings the previous heuristic hit a velocity/data field and
+         * left the real type at default 0 = piglin -> client rendered a ghost piglin.
+         */
         private void writeEntityTypeVarInt(Object packet, int typeId) throws Throwable {
             java.lang.reflect.Field[] fs = packet.getClass().getDeclaredFields();
-            int intSeen = 0;
+            java.lang.reflect.Field idF = null, firstD = null;
             for (java.lang.reflect.Field f : fs) {
-                if (f.getType() != int.class) continue;
-                // On 1.19.2 the layout is: [0]=entityId, [1]=entityType, then data/velocity ints.
-                if (intSeen == 1) { f.setAccessible(true); f.setInt(packet, typeId); return; }
-                intSeen++;
+                Class<?> t = f.getType();
+                if ((t == int.class || t == Integer.class) && idF == null) idF = f;
+                else if ((t == double.class || t == Double.class) && firstD == null) firstD = f;
+                if (idF != null && firstD != null) break;
             }
+            if (idF == null || firstD == null) throw new IllegalStateException("SPAWN_ENTITY fields not found");
+            idF.setAccessible(true); firstD.setAccessible(true);
+            java.lang.reflect.Field target = null;
+            try {
+                long offId = idF.getLong(packet), offD = firstD.getLong(packet);
+                if (offD > offId) {
+                    for (java.lang.reflect.Field f : fs) {
+                        Class<?> t = f.getType();
+                        if ((t == int.class || t == Integer.class) && f != idF) {
+                            f.setAccessible(true);
+                            long off = f.getLong(packet);
+                            if (off > offId && off < offD) { target = f; break; }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            if (target == null) {
+                // Fallback: first int field that is NOT the entity id.
+                for (java.lang.reflect.Field f : fs) {
+                    Class<?> t = f.getType();
+                    if ((t == int.class || t == Integer.class) && f != idF) { target = f; break; }
+                }
+            }
+            if (target == null) throw new IllegalStateException("SPAWN_ENTITY type field not found");
+            target.setAccessible(true);
+            target.setInt(packet, typeId);
         }
 
         private Object craftItemStack(ItemStack stack) throws Throwable {

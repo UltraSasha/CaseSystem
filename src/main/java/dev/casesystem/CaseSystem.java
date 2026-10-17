@@ -284,6 +284,7 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
 
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
+        if (animationManager != null) animationManager.cleanupPlayer(e.getPlayer().getUniqueId());
         dataManager.save(e.getPlayer().getUniqueId());
     }
 
