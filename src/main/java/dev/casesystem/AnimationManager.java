@@ -1,8 +1,5 @@
 package dev.casesystem;
 
-import com.comphenix.protocol.PacketType;
-import com.comphenix.protocol.ProtocolLibrary;
-import com.comphenix.protocol.ProtocolManager;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Particle;
@@ -404,16 +401,20 @@ public final class AnimationManager {
         void spawn(Player p, int entityId, Location at) {
             if (!protocolLibPresent || !available()) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                com.comphenix.protocol.events.PacketContainer spawn = pm.createPacket(PacketType.Play.Server.SPAWN_ENTITY);
+                Object pm = protocolManager();
+                if (pm == null) return;
+                Object spawn = createPacket(pm, "Play.Server.SPAWN_ENTITY");
                 // 1.19.2 packet layout: entityId(int), UUID, entityType(VarInt), x,y,z(double),
                 // pitch/yaw(byte angles), data(int), velocityX/Y/Z(int), removed(boolean).
                 // ProtocolLib has no setter for the type VarInt -> write it via reflection.
-                spawn.getIntegers().write(0, entityId);
-                spawn.getUUIDs().write(0, UUID.randomUUID());
-                spawn.getDoubles().write(0, at.getX()).write(1, at.getY()).write(2, at.getZ());
-                writeEntityTypeVarInt(spawn.getHandle(), itemTypeVarInt);
-                pm.sendServerPacket(p, spawn);
+                invokeWrite(packetIntegers(spawn), 0, entityId);
+                invokeWrite(packetUUIDs(spawn), 0, UUID.randomUUID());
+                Object doubles = packetField(spawn, "getDoubles");
+                invokeWrite(doubles, 0, at.getX());
+                invokeWrite(doubles, 1, at.getY());
+                invokeWrite(doubles, 2, at.getZ());
+                writeEntityTypeVarInt(packetHandle(spawn), itemTypeVarInt);
+                sendPacket(pm, p, spawn);
 
                 // Invisible flag (byte metadata index 0 = 0x20): the client only sees the
                 // rendered item - this is our "invisible anchor" concept.
@@ -427,7 +428,8 @@ public final class AnimationManager {
             Player p = Bukkit.getPlayer(ownerId);
             if (p == null || !protocolLibPresent) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
+                Object pm = protocolManager();
+                if (pm == null) return;
                 Object nms = craftItemStack(stack);                       // net.minecraft.world.item.ItemStack
                 Object optional = java.util.Optional.of(nms);
                 Object serializer = findSerializer("itemstack");          // Optional<ItemStack> serializer
@@ -439,11 +441,15 @@ public final class AnimationManager {
         void teleport(Player p, int entityId, Location at) {
             if (!protocolLibPresent) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                com.comphenix.protocol.events.PacketContainer tele = pm.createPacket(PacketType.Play.Server.ENTITY_TELEPORT);
-                tele.getIntegers().write(0, entityId);
-                tele.getDoubles().write(0, at.getX()).write(1, at.getY()).write(2, at.getZ());
-                pm.sendServerPacket(p, tele);
+                Object pm = protocolManager();
+                if (pm == null) return;
+                Object tele = createPacket(pm, "Play.Server.ENTITY_TELEPORT");
+                invokeWrite(packetIntegers(tele), 0, entityId);
+                Object doubles = packetField(tele, "getDoubles");
+                invokeWrite(doubles, 0, at.getX());
+                invokeWrite(doubles, 1, at.getY());
+                invokeWrite(doubles, 2, at.getZ());
+                sendPacket(pm, p, tele);
             } catch (Throwable ignored) {}
         }
 
@@ -451,8 +457,9 @@ public final class AnimationManager {
             Player p = Bukkit.getPlayer(ownerId);
             if (p == null || !protocolLibPresent) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                com.comphenix.protocol.events.PacketContainer rem = pm.createPacket(PacketType.Play.Server.ENTITY_DESTROY);
+                Object pm = protocolManager();
+                if (pm == null) return;
+                Object rem = createPacket(pm, "Play.Server.ENTITY_DESTROY");
                 boolean sent = false;
                 // Modern form: NMS IntList field.
                 for (String cls : new String[]{"net.minecraft.util.IntList", "net.minecraft.nbt.NBTProcessReadFinalizeTag"}) {
@@ -460,13 +467,77 @@ public final class AnimationManager {
                         Class<?> intList = Class.forName(cls);
                         if (!intList.getSimpleName().equals("IntList")) continue;
                         Object list = intList.getConstructor(int[].class).newInstance((Object) new int[]{entityId});
-                        setFieldByType(rem.getHandle(), list.getClass(), list);
+                        setFieldByType(packetHandle(rem), list.getClass(), list);
                         sent = true; break;
                     } catch (Throwable ignored) {}
                 }
-                if (!sent) rem.getIntegerArrays().write(0, new int[]{entityId}); // legacy fallback
-                pm.sendServerPacket(p, rem);
+                if (!sent) {
+                    Object intArrays = packetField(rem, "getIntegerArrays");
+                    invokeWrite(intArrays, 0, new int[]{entityId}); // legacy fallback
+                }
+                sendPacket(pm, p, rem);
             } catch (Throwable ignored) {}
+        }
+
+        // -- ProtocolLib access via REFLECTION ONLY -------------------------
+        // All com.comphenix.* references are string-based so that AnimationManager
+        // verifies/loads even when ProtocolLib is absent (NoClassDefFoundError-safe).
+
+        private static Object protocolManager() {
+            try {
+                Class<?> lib = Class.forName("com.comphenix.protocol.ProtocolLibrary");
+                return lib.getMethod("getProtocolManager").invoke(null);
+            } catch (Throwable t) { return null; }
+        }
+
+        /** pm.createPacket(PacketType.Play.Server.<name>) */
+        private static Object createPacket(Object pm, String typeName) throws Throwable {
+            Class<?> pt = Class.forName("com.comphenix.protocol.PacketType");
+            Class<?> play = Class.forName("com.comphenix.protocol.PacketType$Play");
+            Class<?> server = Class.forName("com.comphenix.protocol.PacketType$Play$Server");
+            Object playEnum = play.getField("PLAY").get(null);
+            Object serverEnum = server.getField("SERVER").get(playEnum);
+            Object type = server.getField(typeName.substring(typeName.lastIndexOf('.') + 1)).get(serverEnum);
+            return server.getMethod("createPacket", pt).invoke(serverEnum, type);
+        }
+
+        private static Object packetHandle(Object container) throws Throwable {
+            return container.getClass().getMethod("getHandle").invoke(container);
+        }
+
+        private static Object packetField(Object container, String getter) throws Throwable {
+            return container.getClass().getMethod(getter).invoke(container);
+        }
+
+        private static Object packetIntegers(Object container) throws Throwable {
+            return packetField(container, "getIntegers");
+        }
+
+        private static Object packetUUIDs(Object container) throws Throwable {
+            return packetField(container, "getUUIDs");
+        }
+
+        /** collection.write(int index, Object value) - StructureModifier polymorphic write. */
+        private static void invokeWrite(Object modifier, int index, Object value) throws Throwable {
+            for (Method m : modifier.getClass().getMethods()) {
+                if (m.getName().equals("write") && m.getParameterCount() == 2
+                        && m.getParameterTypes()[0] == int.class) {
+                    Class<?> vt = m.getParameterTypes()[1];
+                    if (vt.isInstance(value) || (value != null && vt.isAssignableFrom(value.getClass()))) {
+                        m.invoke(modifier, index, value);
+                        return;
+                    }
+                }
+            }
+            throw new NoSuchMethodException("write(int," + value.getClass().getSimpleName() + ")");
+        }
+
+        /** pm.sendServerPacket(Player, PacketContainer) */
+        private static void sendPacket(Object pm, Player p, Object container) throws Throwable {
+            Class<?> entityCls = Class.forName("org.bukkit.entity.Entity");
+            Class<?> containerCls = Class.forName("com.comphenix.protocol.events.PacketContainer");
+            Method m = pm.getClass().getMethod("sendServerPacket", entityCls, containerCls);
+            m.invoke(pm, p, container);
         }
 
         // -- low-level reflection helpers ---------------------------------
@@ -537,20 +608,20 @@ public final class AnimationManager {
             return itemCls.getConstructor(int.class, serIfc, Object.class).newInstance(index, serializer, value);
         }
 
-        private void sendFlagsMetadata(ProtocolManager pm, Player p, int entityId, byte flags) throws Throwable {
+        private void sendFlagsMetadata(Object pm, Player p, int entityId, byte flags) throws Throwable {
             Object byteSer = findSerializer("byte");
             sendMetadataItems(pm, p, entityId, new Object[]{dataWatcherItem(0, byteSer, flags)});
         }
 
-        private void sendMetadataItems(ProtocolManager pm, Player p, int entityId, Object[] items) {
+        private void sendMetadataItems(Object pm, Player p, int entityId, Object[] items) {
             try {
-                com.comphenix.protocol.events.PacketContainer meta = pm.createPacket(PacketType.Play.Server.ENTITY_METADATA);
-                meta.getIntegers().write(0, entityId);
-                Object handle = meta.getHandle();
+                Object meta = createPacket(pm, "Play.Server.ENTITY_METADATA");
+                invokeWrite(packetIntegers(meta), 0, entityId);
+                Object handle = packetHandle(meta);
                 Object arr = Array.newInstance(items.getClass().getComponentType(), items.length);
                 System.arraycopy(items, 0, arr, 0, items.length);
                 setFieldByType(handle, arr.getClass(), arr);
-                pm.sendServerPacket(p, meta);
+                sendPacket(pm, p, meta);
             } catch (Throwable ignored) {}
         }
 
