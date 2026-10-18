@@ -1,6 +1,5 @@
 package dev.casesystem;
 
-import me.clip.placeholderapi.PlaceholderAPI;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
@@ -47,7 +46,8 @@ public final class RewardManager {
         player.updateInventory();
         player.sendMessage(CaseSystem.Messages.get("won-message")
                 .replace("%item%", displayName(item))
-                .replace("%rarity%", rarity.color + rarity.id));
+                .replace("%case%", CaseSystem.Messages.color(c.name))
+                .replace("%rarity%", rarity.color + capitalize(rarity.id)));
     }
 
     /**
@@ -79,6 +79,10 @@ public final class RewardManager {
                 .replace("%amount%", String.valueOf(amount));
     }
 
+    private static String capitalize(String s) {
+        return s == null || s.isEmpty() ? "" : Character.toUpperCase(s.charAt(0)) + s.substring(1);
+    }
+
     private static boolean containsPlaceholder(String s) {
         return PLACEHOLDER.matcher(s).find();
     }
@@ -96,13 +100,26 @@ public final class RewardManager {
         while (m.find()) {
             String token = m.group();
             sb.append(source, last, m.start());
-            String value = PlaceholderAPI.setPlaceholders(player, token);
+            String value = papiSet(player, token);   // PlaceholderAPI via reflection
             boolean resolved = value != null && !value.equals(token) && !value.contains("%");
             sb.append(resolved ? value : token);
             last = m.end();
         }
         sb.append(source, last, source.length());
         return sb.toString();
+    }
+
+    /**
+     * me.clip.placeholderapi.PlaceholderAPI.setPlaceholders(OfflinePlayer, String)
+     * invoked reflectively - RewardManager must load even without PlaceholderAPI.
+     */
+    private static String papiSet(Player player, String token) {
+        try {
+            Class<?> api = Class.forName("me.clip.placeholderapi.PlaceholderAPI");
+            Object r = api.getMethod("setPlaceholders", org.bukkit.OfflinePlayer.class, String.class)
+                          .invoke(null, player, token);
+            return r == null ? null : r.toString();
+        } catch (Throwable t) { return null; }
     }
 
     private String displayName(CaseManager.ItemDef item) {

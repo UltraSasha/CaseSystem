@@ -55,15 +55,17 @@ public final class CaseManager implements Listener {
 
     public static final class CaseDef {
         public final String id;
-        public final String name;
+        /** Unique LETTERS-ONLY permission id (a-zA-Z), e.g. "common", "starter". */
+        public final String permId;
+        public String name;
         public final List<String> description;
         public final boolean showContents;
         public final ItemStack icon;
         public final LinkedHashMap<String, Rarity> rarities = new LinkedHashMap<>();
         public final List<ItemDef> items = new ArrayList<>();
 
-        CaseDef(String id, String name, List<String> description, boolean showContents, ItemStack icon) {
-            this.id = id; this.name = name; this.description = description;
+        CaseDef(String id, String permId, String name, List<String> description, boolean showContents, ItemStack icon) {
+            this.id = id; this.permId = permId; this.name = name; this.description = description;
             this.showContents = showContents; this.icon = icon;
         }
 
@@ -93,6 +95,8 @@ public final class CaseManager implements Listener {
     // ------------------------------------------------------------------
     private final CaseSystem plugin;
     private final Map<String, CaseDef> cases = new LinkedHashMap<>();
+    /** permId (letters-only) -> case id, rebuilt on every parseCases(). */
+    private final Map<String, String> permIndex = new LinkedHashMap<>();
     private final NamespacedKey cmdKey, caseKey;
     /** Roulette sessions: inventory -> items laid out on its middle row. */
     private final Map<Inventory, Integer> rouletteTicks = new LinkedHashMap<>();
@@ -107,6 +111,11 @@ public final class CaseManager implements Listener {
     }
 
     public Map<String, CaseDef> getCases() { return cases; }
+    /** Looks up a case by its letters-only permission id (case-insensitive). */
+    public CaseDef byPermId(String permId) {
+        String cid = permIndex.get(permId == null ? "" : permId.toLowerCase(Locale.ROOT));
+        return cid == null ? null : cases.get(cid);
+    }
     public NamespacedKey commandKey() { return cmdKey; }
 
     // ------------------------------------------------------------------
@@ -115,6 +124,7 @@ public final class CaseManager implements Listener {
     @SuppressWarnings("deprecation")
     public void parseCases(FileConfiguration cfg) {
         cases.clear();
+        permIndex.clear();
         ConfigurationSection root = cfg.getConfigurationSection("cases");
         if (root == null) return;
         boolean globalShow = cfg.getBoolean("gui.show-contents", true);
@@ -122,14 +132,18 @@ public final class CaseManager implements Listener {
             ConfigurationSection cs = root.getConfigurationSection(cid);
             if (cs == null) continue;
             cid = cid.toLowerCase(Locale.ROOT);
-            String name = CaseSystem.Messages.color(cs.getString("name", cid));
+            // Unique LETTERS-ONLY permission id: explicit 'permission-id:' or derived from the key.
+            String permId = sanitizePermId(cs.getString("permission-id", ""), cid);
+            if (permId.isEmpty()) permId = sanitizePermId("", "case" + cid);
+            // Raw display name from config (color codes are applied by Messages.color() later).
+            String name = cs.getString("name", cid);
             List<String> desc = new ArrayList<>();
             for (String d : cs.getStringList("description")) desc.add(CaseSystem.Messages.color(d));
             boolean show = cs.contains("show-contents") ? cs.getBoolean("show-contents") : globalShow;
 
             ItemStack icon = buildIcon(cs, Material.CHEST, name, desc);
 
-            CaseDef def = new CaseDef(cid, name, desc, show, icon);
+            CaseDef def = new CaseDef(cid, permId, name, desc, show, icon);
             ConfigurationSection rs = cs.getConfigurationSection("rarities");
             if (rs != null) for (String rid : rs.getKeys(false)) {
                 ConfigurationSection rc = rs.getConfigurationSection(rid);
@@ -141,7 +155,8 @@ public final class CaseManager implements Listener {
                 ItemStack disp = new ItemStack(dm);
                 ItemMeta dm2 = disp.getItemMeta();
                 if (dm2 != null) {
-                    dm2.setDisplayName(color + capitalize(rid));
+                    dm2.setDisplayName(CaseSystem.Messages.get("rarity-name")
+                            .replace("%color%", color).replace("%rarity%", capitalize(rid)));
                     disp.setItemMeta(dm2);
                 }
                 def.rarities.put(rid, new Rarity(rid, color, weight, disp));
@@ -159,11 +174,14 @@ public final class CaseManager implements Listener {
                 Material mat = matchMaterial(ic.getString("material", "STONE"), Material.STONE);
                 List<String> lore = new ArrayList<>();
                 for (String l : ic.getStringList("lore")) lore.add(CaseSystem.Messages.color(l));
-                lore.add("");
-                lore.add("&7Редкость: " + def.rarities.get(rarityId).color + rarityId);
-                lore.add("&7Шанс: &e" + String.format(Locale.US, "%.2f%%", placeholderChance(def, rarityId, weight)));
+                if (!lore.isEmpty()) lore.add("");
+                lore.add(CaseSystem.Messages.get("item-lore-rarity")
+                        .replace("%color%", def.rarities.get(rarityId).color)
+                        .replace("%rarity%", rarityId));
+                lore.add(CaseSystem.Messages.get("item-lore-chance")
+                        .replace("%percent%", "%CHANCE%")); // filled after all items are parsed
                 ItemStack item = buildIcon(ic, mat,
-                        CaseSystem.Messages.color(ic.getString("name", "&f" + iid)),
+                        CaseSystem.Messages.get("item-name").replace("%item%", ic.getString("name", iid)),
                         colorizeList(lore));
                 if (ic.getBoolean("glow", false)) {
                     // MENDING exists in the 1.19.2 API and on 1.21.1; combined with
@@ -178,15 +196,33 @@ public final class CaseManager implements Listener {
                 plugin.getLogger().warning("Case '" + cid + "' has no rarities/items - skipped.");
                 continue;
             }
+            // Apply the messages.yml name template NOW, when all placeholders are known:
+            // %case% = raw config name, %rarities%/%items% = counts. Chance lore lines are
+            // filled below (after every item weight is parsed), then the icon is rebuilt.
+            def.name = CaseSystem.Messages.get("gui-case-name")
+                    .replace("%case%", def.name)
+                    .replace("%rarities%", String.valueOf(def.rarities.size()))
+                    .replace("%items%", String.valueOf(def.items.size()));
+            for (ItemDef it : def.items) {
+                ItemMeta im = it.icon.getItemMeta();
+                if (im == null || !im.hasLore()) continue;
+                List<String> lore2 = new ArrayList<>();
+                for (String l : im.getLore()) {
+                    if (l.contains("%CHANCE%"))
+                        lore2.add(l.replace("%CHANCE%", String.format(Locale.US, "%.2f%%", def.chanceOf(it))));
+                    else lore2.add(l);
+                }
+                im.setLore(lore2);
+                it.icon.setItemMeta(im);
+            }
+            def.icon = buildIcon(root.getConfigurationSection(cid), Material.CHEST,
+                    CaseSystem.Messages.color(def.name), def.description);
+            String pid = def.permId.toLowerCase(Locale.ROOT);
+            if (permIndex.containsKey(pid))
+                plugin.getLogger().warning("Duplicate permission-id '" + def.permId + "' on case '" + cid + "' - rename it in config.yml!");
+            permIndex.put(pid, cid);
             cases.put(cid, def);
         }
-    }
-
-    private double placeholderChance(CaseDef def, String rarityId, int itemWeight) {
-        long rSum = def.totalRarityWeight(), iSum = def.totalItemWeight(rarityId);
-        if (rSum <= 0 || iSum <= 0) return 0;
-        Rarity r = def.rarities.get(rarityId);
-        return (100.0 * r.weight / rSum) * (100.0 * itemWeight / iSum) / 100.0;
     }
 
     private List<String> colorizeList(List<String> in) {
@@ -235,86 +271,114 @@ public final class CaseManager implements Listener {
         return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
+    /**
+     * Normalizes a permission id: strips accents, keeps ONLY English letters (a-zA-Z),
+     * uppercases the first letter of each word. Result is safe for permission nodes
+     * (no digits, spaces or special characters). Example: "my epic case!" -> "MyEpicCase".
+     */
+    public static String sanitizePermId(String raw, String fallback) {
+        String src = (raw == null || raw.trim().isEmpty()) ? fallback : raw;
+        StringBuilder sb = new StringBuilder();
+        boolean capNext = true;
+        for (char ch : java.text.Normalizer.normalize(src, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{InCombiningDiacriticalMarks}+", "").toCharArray()) {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+                sb.append(capNext ? Character.toUpperCase(ch) : ch);
+                capNext = false;
+            } else if (ch == '_' || ch == '-' || ch == ' ' || ch == '.') {
+                capNext = true;
+            }
+            // everything else (digits, punctuation, non-latin) is dropped
+        }
+        return sb.toString();
+    }
+
     // ------------------------------------------------------------------
     // GUI level 1: case list
     // ------------------------------------------------------------------
+    /** Returns a fresh clone of the case icon with per-view lore (uses messages.yml templates). */
+    private ItemStack caseIcon(CaseDef c, Player p, boolean detail) {
+        int avail = plugin.data().getAvailable(p.getUniqueId(), p.getName(), c.id);
+        String availStr = avail == Integer.MAX_VALUE ? CaseSystem.Messages.get("gui-available-infinite")
+                : CaseSystem.Messages.get("gui-available-finite").replace("%amount%", String.valueOf(avail));
+        ItemStack it = c.icon.clone();
+        ItemMeta m = it.getItemMeta();
+        if (m != null) {
+            List<String> lore = new ArrayList<>();
+            for (String line : (detail ? CaseSystem.Messages.getList("gui-detail-lore")
+                                        : CaseSystem.Messages.getList("gui-main-entry-lore"))) {
+                if ("%desc%".equals(line.trim())) {          // marker: insert description lines here
+                    lore.addAll(c.description);
+                    continue;
+                }
+                lore.add(line.replace("%case%", c.name)
+                        .replace("%available%", availStr)
+                        .replace("%rarities%", String.valueOf(c.rarities.size()))
+                        .replace("%items%", String.valueOf(c.items.size()))
+                        .replace("%perm%", "casesystem.case." + c.permId));
+            }
+            m.setLore(colorizeList(lore));
+            m.getPersistentDataContainer().set(caseKey, org.bukkit.persistence.PersistentDataType.STRING, c.id);
+            it.setItemMeta(m);
+        }
+        return it;
+    }
+
     public void openMainGui(Player p) {
-        FileConfiguration cfg = plugin.getConfig();
-        int rows = Math.min(6, Math.max(1, cfg.getInt("gui.rows", 6)));
-        String title = CaseSystem.Messages.color(cfg.getString("gui.main-title", "&8Кейсы"));
-        Inventory inv = Bukkit.createInventory(new GuiHolder(View.MAIN), rows * 9, title);
-        fill(inv, cfg);
+        Inventory inv = Bukkit.createInventory(new GuiHolder(View.MAIN), 27,
+                CaseSystem.Messages.get("gui-main-title"));
+        fill(inv);
         int slot = 10;
         for (CaseDef c : cases.values()) {
-            if (!p.hasPermission(DataManager.PERM_BASE + c.id)) continue; // presence check only for listing
-            int avail = plugin.data().getAvailable(p.getUniqueId(), p.getName(), c.id);
-            if (avail <= 0) continue;
-            ItemStack it = c.icon.clone();
-            ItemMeta m = it.getItemMeta();
-            if (m != null) {
-                List<String> lore = m.getLore() == null ? new ArrayList<>() : new ArrayList<>(m.getLore());
-                lore.add("&8Открытий: &e" + (avail == Integer.MAX_VALUE ? "∞" : avail));
-                m.setLore(colorizeList(lore));
-                m.getPersistentDataContainer().set(caseKey, org.bukkit.persistence.PersistentDataType.STRING, c.id);
-                it.setItemMeta(m);
+            // Cases are ALWAYS shown regardless of rights/counter (product decision).
+            while (slot < 17 && slot % 9 != 8) {
+                inv.setItem(slot, caseIcon(c, p, false));
+                slot++;
+                break;
             }
-            while (slot < inv.getSize() && (slot % 9 == 0 || slot % 9 == 8)) slot++; // keep away from edges
-            if (slot >= inv.getSize()) break;
-            inv.setItem(slot, it);
-            slot++;
+            if (slot >= 17) break;
         }
         p.openInventory(inv);
     }
 
     // ------------------------------------------------------------------
-    // GUI level 2: case detail
+    // GUI level 2: case detail. There is NO separate "open" button anymore:
+    // clicking the case-icon button itself opens/purchases the case.
     // ------------------------------------------------------------------
     public void openDetailGui(Player p, CaseDef c) {
-        FileConfiguration cfg = plugin.getConfig();
-        String title = CaseSystem.Messages.color(cfg.getString("gui.detail-title", "&8Кейс: &f{case}")).replace("{case}", stripColors(c.name));
-        Inventory inv = Bukkit.createInventory(new GuiHolder(View.DETAIL), 27, title);
-        fill(inv, cfg);
-        ItemStack icon = c.icon.clone();
-        ItemMeta im = icon.getItemMeta();
-        if (im != null) {
-            List<String> lore = im.getLore() == null ? new ArrayList<>() : new ArrayList<>(im.getLore());
-            int avail = plugin.data().getAvailable(p.getUniqueId(), p.getName(), c.id);
-            lore.add("&8Открытий: &e" + (avail == Integer.MAX_VALUE ? "∞" : avail));
-            im.setLore(colorizeList(lore));
-            im.getPersistentDataContainer().set(caseKey, org.bukkit.persistence.PersistentDataType.STRING, c.id);
-            icon.setItemMeta(im);
-        }
-        inv.setItem(4, icon);
+        Inventory inv = Bukkit.createInventory(new GuiHolder(View.DETAIL), 45,
+                CaseSystem.Messages.get("gui-detail-title").replace("%case%", c.name));
+        fill(inv);
+        inv.setItem(13, caseIcon(c, p, true));   // clickable purchase button
 
         if (c.showContents) {
-            int slot = 19;
             long rSum = c.totalRarityWeight();
+            int slot = 21;
             for (Rarity r : c.rarities.values()) {
-                if (slot > 25) break;
+                if (slot > 24) break;
                 ItemStack ri = r.display.clone();
                 ItemMeta rm = ri.getItemMeta();
                 if (rm != null) {
                     List<String> lore = new ArrayList<>();
-                    lore.add("&7Предметов: &f" + c.itemsOf(r.id).size());
-                    lore.add("&7Шанс редкости: &e" + String.format(Locale.US, "%.1f%%", rSum > 0 ? 100.0 * r.weight / rSum : 0));
-                    for (ItemDef it : c.itemsOf(r.id))
-                        lore.add("  &8- " + plainName(it.icon) + " &7(" + String.format(Locale.US, "%.2f%%", c.chanceOf(it)) + ")");
+                    for (String line : CaseSystem.Messages.getList("gui-rarity-lore")) {
+                        if ("%items%".equals(line.trim())) {  // marker: item list goes here
+                            for (ItemDef it : c.itemsOf(r.id))
+                                lore.add(CaseSystem.Messages.get("gui-rarity-item-line")
+                                        .replace("%item%", plainName(it.icon))
+                                        .replace("%percent%", String.format(Locale.US, "%.2f%%", c.chanceOf(it))));
+                            continue;
+                        }
+                        lore.add(line.replace("%color%", r.color)
+                                .replace("%rarity%", capitalize(r.id))
+                                .replace("%count%", String.valueOf(c.itemsOf(r.id).size()))
+                                .replace("%percent%", String.format(Locale.US, "%.1f%%", rSum > 0 ? 100.0 * r.weight / rSum : 0)));
+                    }
                     rm.setLore(colorizeList(lore));
                     ri.setItemMeta(rm);
                 }
                 inv.setItem(slot++, ri);
             }
         }
-        // Open button
-        ItemStack open = new ItemStack(Material.LIME_DYE);
-        ItemMeta om = open.getItemMeta();
-        if (om != null) {
-            om.setDisplayName("&a&lОткрыть кейс");
-            om.setLore(colorizeList(List.of("&7Кликните, чтобы открыть", "&7этот кейс.")));
-            om.getPersistentDataContainer().set(caseKey, org.bukkit.persistence.PersistentDataType.STRING, c.id);
-            open.setItemMeta(om);
-        }
-        inv.setItem(22, open);
         p.openInventory(inv);
     }
 
@@ -327,9 +391,13 @@ public final class CaseManager implements Listener {
      */
     public void startRoulette(Player p, List<ItemStack> strip, int winnerSlot, Runnable onEnd) {
         Inventory inv = Bukkit.createInventory(new GuiHolder(View.ROULETTE), 27,
-                CaseSystem.Messages.color(plugin.getConfig().getString("gui.roulette-title", "&8Открытие&7...")));
+                CaseSystem.Messages.get("gui-roulette-title"));
         for (int i = 0; i < 9; i++) inv.setItem(10 + i, strip.get(i % strip.size()));
         inv.setItem(14, strip.get(winnerSlot % strip.size()));
+        ItemStack sel = new ItemStack(Material.PAPER);
+        ItemMeta sm = sel.getItemMeta();
+        if (sm != null) { sm.setDisplayName(CaseSystem.Messages.get("gui-roulette-selector")); sel.setItemMeta(sm); }
+        inv.setItem(13, sel); inv.setItem(15, sel);
         rouletteWinnerSlot.put(inv, winnerSlot % strip.size());
         rouletteTicks.put(inv, 0);
         rouletteFinish.put(inv, () -> { cleanupRoulette(inv); onEnd.run(); });
@@ -388,7 +456,8 @@ public final class CaseManager implements Listener {
                 }
             }
             case DETAIL -> {
-                if (caseId != null && e.getRawSlot() == 22) {
+                // The case icon button itself is the purchase trigger (slot 13).
+                if (caseId != null && e.getRawSlot() == 13) {
                     CaseDef c = cases.get(caseId);
                     if (c != null) beginOpen(p, c);
                 }
@@ -405,33 +474,29 @@ public final class CaseManager implements Listener {
     /** Entry point for an actual open attempt (permission + counter check). */
     public void beginOpen(Player p, CaseDef c) {
         if (!plugin.anim().canStart(p)) { p.sendMessage(CaseSystem.Messages.msg("opening-busy")); return; }
-        if (!p.hasPermission(DataManager.PERM_BASE + c.id)) { p.sendMessage(CaseSystem.Messages.msg("no-permission")); return; }
         if (!plugin.data().consume(p.getUniqueId(), p.getName(), c.id)) {
             p.sendMessage(CaseSystem.Messages.get("no-rights").replace("%case%", c.name));
             return;
         }
+        // Close the inventory so the 3D animation is visible above the player.
+        p.closeInventory();
         plugin.anim().startOpening(p, c, () -> openDetailGui(p, c));
     }
 
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
-    private void fill(Inventory inv, FileConfiguration cfg) {
-        Material filler = matchMaterial(cfg.getString("gui.filler", "BLACK_STAINED_GLASS_PANE"), Material.BLACK_STAINED_GLASS_PANE);
+    private void fill(Inventory inv) {
+        Material filler = matchMaterial(plugin.getConfig().getString("gui.filler", "BLACK_STAINED_GLASS_PANE"),
+                Material.BLACK_STAINED_GLASS_PANE);
         ItemStack f = new ItemStack(filler);
         ItemMeta fm = f.getItemMeta();
-        if (fm != null) { fm.setDisplayName("&r"); f.setItemMeta(fm); }
-        f = colorizeItem(f);
+        if (fm != null) { fm.setDisplayName(CaseSystem.Messages.get("gui-filler-name")); f.setItemMeta(fm); }
+        int lastRow = (inv.getSize() / 9) - 1;
         for (int i = 0; i < inv.getSize(); i++) {
             int col = i % 9, row = i / 9;
-            if (col == 0 || col == 8 || row == 0 || row == inv.getSize() / 9 - 1) inv.setItem(i, f);
+            if (col == 0 || col == 8 || row == 0 || row == lastRow) inv.setItem(i, f);
         }
-    }
-
-    private ItemStack colorizeItem(ItemStack it) {
-        ItemMeta m = it.getItemMeta();
-        if (m != null) { m.setDisplayName(CaseSystem.Messages.color(m.getDisplayName() == null ? "" : m.getDisplayName())); it.setItemMeta(m); }
-        return it;
     }
 
     static Sound sound(String name, Sound fallback) {

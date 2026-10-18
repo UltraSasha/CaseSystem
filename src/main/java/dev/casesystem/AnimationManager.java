@@ -1,8 +1,5 @@
 package dev.casesystem;
 
-import com.comphenix.protocol.PacketType;
-import com.comphenix.protocol.ProtocolLibrary;
-import com.comphenix.protocol.ProtocolManager;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Particle;
@@ -105,43 +102,53 @@ public final class AnimationManager {
 
         int phase1 = Math.max(5, cfg.getInt("animation.phase1-ticks", 40));
         int phase2 = Math.max(5, cfg.getInt("animation.phase2-ticks", 60));
+        // Configurable delays (ticks): rarity->items pause, final display time before reward/GUI.
+        int betweenDelay = Math.max(0, cfg.getInt("animation.between-phases-delay-ticks", 10));
+        int finishDelay  = Math.max(0, cfg.getInt("animation.finish-delay-ticks", 20));
+        int guiStartDelay = Math.max(0, cfg.getInt("animation.gui-start-delay-ticks", 2));
 
         if (mode == Mode.GUI_ROULETTE) {
-            runGuiPhase(p, strip1, phase1, tick, () ->
-                plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
-                    if (p.isOnline()) {
-                        p.playSound(p.getLocation(), fin, 1f, 1f);
-                        deliver(p, c, rarity, item);
-                    }
-                    finish(p, onFinish);
-                }));
+            runGuiPhase(p, strip1, phase1, guiStartDelay, tick, () ->
+                Bukkit.getScheduler().runTaskLater(plugin, () ->
+                    plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
+                        if (p.isOnline()) {
+                            p.playSound(p.getLocation(), fin, 1f, 1f);
+                            deliver(p, c, rarity, item);
+                        }
+                        Bukkit.getScheduler().runTaskLater(plugin, () -> finish(p, onFinish), finishDelay);
+                    }), betweenDelay));
             return;
         }
 
         // ---- 3D path (native or protocol) ----
         Anchor anchor = createAnchor(p, height);
         if (anchor == null) { // adapter failed -> flat fallback for this session
-            runGuiPhase(p, strip1, phase1, tick, () ->
-                plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
-                    if (p.isOnline()) { deliver(p, c, rarity, item); }
-                    finish(p, onFinish);
-                }));
+            runGuiPhase(p, strip1, phase1, guiStartDelay, tick, () ->
+                Bukkit.getScheduler().runTaskLater(plugin, () ->
+                    plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
+                        if (p.isOnline()) { deliver(p, c, rarity, item); }
+                        Bukkit.getScheduler().runTaskLater(plugin, () -> finish(p, onFinish), finishDelay);
+                    }), betweenDelay));
             return;
         }
-        runReel3D(p, anchor, strip1, phase1, tick, part, () ->
-            runReel3D(p, anchor, strip2, phase2, tick, part, () -> {
-                destroyAnchor(anchor);
-                if (p.isOnline()) {
-                    p.playSound(p.getLocation(), fin, 1f, 1f);
-                    if (part != null)
-                        p.spawnParticle(part, p.getEyeLocation().add(0, height, 0), 40, 0.3, 0.3, 0.3, 0.15);
-                    deliver(p, c, rarity, item);
-                }
-                finish(p, onFinish);
-            }));
+        showAt(anchor, strip1.get(0)); // show the reel immediately at animation start
+        runReel3D(p, anchor, strip1, phase1, tick, part, indexOfRarity(c, rarity, strip1), () ->
+            Bukkit.getScheduler().runTaskLater(plugin, () ->
+                runReel3D(p, anchor, strip2, phase2, tick, part, indexIn(strip2, item.icon), () -> {
+                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                        destroyAnchor(anchor);
+                        if (p.isOnline()) {
+                            p.playSound(p.getLocation(), fin, 1f, 1f);
+                            if (part != null)
+                                p.spawnParticle(part, p.getEyeLocation().add(0, height, 0), 40, 0.3, 0.3, 0.3, 0.15);
+                            deliver(p, c, rarity, item);
+                        }
+                        finish(p, onFinish);
+                    }, finishDelay);
+                }), betweenDelay));
     }
 
-    private void runGuiPhase(Player p, List<ItemStack> strip, int ticks, Sound tick, Runnable end) {
+    private void runGuiPhase(Player p, List<ItemStack> strip, int ticks, int startDelay, Sound tick, Runnable end) {
         org.bukkit.inventory.Inventory inv = Bukkit.createInventory(new CaseManager.GuiHolder(CaseManager.View.ROULETTE), 27,
                 CaseSystem.Messages.color(plugin.getConfig().getString("gui.roulette-title", "&8Открытие&7...")));
         for (int i = 0; i < 9; i++) inv.setItem(10 + i, strip.get(i % strip.size()));
@@ -150,29 +157,45 @@ public final class AnimationManager {
         final int[] task = new int[1];
         task[0] = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             t[0]++;
-            for (int i = 0; i < 9; i++) inv.setItem(10 + i, strip.get(Math.floorMod(t[0] * 2 + i - 4, strip.size())));
-            p.playSound(p.getLocation(), tick, 0.5f, 1f + (t[0] % 4) * 0.1f);
+            double frac = Math.min(1.0, (double) t[0] / ticks);
+            int speed = 2 + (int) ((1.0 - frac) * 4); // fast start, decelerating to 2/tick
+            for (int i = 0; i < 9; i++) inv.setItem(10 + i, strip.get(Math.floorMod(t[0] * speed + i - 4, strip.size())));
+            p.playSound(p.getLocation(), tick, 0.5f, 1f + (float) frac * 0.6f);
             if (t[0] >= ticks) {
                 Bukkit.getScheduler().cancelTask(task[0]);
                 end.run();
             }
-        }, 1L, 1L).getTaskId();
+        }, (long) startDelay, 1L).getTaskId();
     }
 
-    private void runReel3D(Player p, Anchor anchor, List<ItemStack> strip, int ticks, Sound tick, Particle part, Runnable end) {
+    /**
+     * Smooth 3D reel: position advances along an eased curve (fast start -> slow stop)
+     * and lands EXACTLY on stopIndex on the last tick, so the animation "brakes" onto
+     * the winning icon instead of flickering two icons per tick.
+     */
+    private void runReel3D(Player p, Anchor anchor, List<ItemStack> strip, int ticks,
+                            Sound tick, Particle part, int stopIndex, Runnable end) {
+        final int size = Math.max(1, strip.size());
+        final double totalSteps = Math.max(size, ticks * 0.9);
+        final double target = stopIndex + totalSteps;
         final int[] t = {0};
         final int[] holder = new int[1];
         holder[0] = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             t[0]++;
-            showAt(anchor, strip.get(Math.floorMod(t[0] * 2, strip.size())));
+            double frac = Math.min(1.0, (double) t[0] / ticks);
+            double pos = target * (1.0 - Math.pow(1.0 - frac, 2)); // ease-out quadratic
+            int idx = (int) Math.floor(pos) % size;
+            showAt(anchor, strip.get(idx));
             if (p.isOnline()) {
-                p.playSound(p.getLocation(), tick, 0.5f, 1f + (t[0] % 4) * 0.1f);
+                float pitch = 1f + (float) frac * 0.6f;
+                p.playSound(p.getLocation(), tick, 0.5f, pitch);
                 if (part != null && t[0] % 4 == 0)
                     p.spawnParticle(part, p.getEyeLocation().add(0, plugin.getConfig().getDouble("animation.display-height", 1.8), 0),
                             4, 0.2, 0.2, 0.2, 0.05);
             }
             if (t[0] >= ticks) {
                 Bukkit.getScheduler().cancelTask(holder[0]);
+                showAt(anchor, strip.get(Math.floorMod(stopIndex, size))); // land on the winner
                 end.run();
             }
         }, 1L, 1L).getTaskId();
@@ -187,12 +210,24 @@ public final class AnimationManager {
         if (onFinish != null) Bukkit.getScheduler().runTask(plugin, onFinish);
     }
 
+    /** Fake entity ids currently alive per player (cleanup on quit/disable). */
+    private final java.util.Map<UUID, List<Integer>> liveFakes = new java.util.concurrent.ConcurrentHashMap<>();
+
     public void shutdown() {
         for (Entity e : new ArrayList<>(liveEntities)) {
             try { e.remove(); } catch (Throwable ignored) {}
         }
         liveEntities.clear();
+        for (java.util.Map.Entry<UUID, List<Integer>> en : liveFakes.entrySet())
+            for (Integer id : en.getValue()) sendFakeRemove(en.getKey(), id);
+        liveFakes.clear();
         busy.clear();
+    }
+
+    /** Removes any leftover fake displays of a quitting player (called from CaseSystem listener). */
+    public void cleanupPlayer(UUID id) {
+        List<Integer> ids = liveFakes.remove(id);
+        if (ids != null) for (Integer eid : ids) sendFakeRemove(id, eid);
     }
 
     // ------------------------------------------------------------------
@@ -220,6 +255,15 @@ public final class AnimationManager {
         return null;
     }
 
+    private int indexOfRarity(CaseManager.CaseDef c, CaseManager.Rarity r, List<ItemStack> strip) {
+        int i = 0;
+        for (CaseManager.Rarity x : c.rarities.values()) {
+            if (x.id.equals(r.id)) return Math.floorMod(i, Math.max(1, strip.size()));
+            i++;
+        }
+        return 0;
+    }
+
     private int indexIn(List<ItemStack> strip, ItemStack icon) {
         for (int i = 0; i < strip.size(); i++) if (strip.get(i).isSimilar(icon)) return i;
         return 0;
@@ -241,9 +285,12 @@ public final class AnimationManager {
         Location at = p.getEyeLocation().add(0, height, 0);
         try {
             if (mode == Mode.PROTO_3D) {
+                if (!proto.available())
+                    throw new IllegalStateException("item_display protocol id unresolved on this server");
                 int fakeId = nextFakeId();
                 a.displayRef = fakeId;
                 a.anchorLoc = at.clone();
+                liveFakes.computeIfAbsent(p.getUniqueId(), k2 -> new ArrayList<>()).add(fakeId);
                 sendFakeSpawn(p, fakeId, at);
             } else {
                 // NATIVE_3D (>= 1.19.4): reflective spawn of ITEM_DISPLAY.
@@ -280,10 +327,8 @@ public final class AnimationManager {
                 if (pl != null) {
                     Location cur = pl.getEyeLocation()
                             .add(0, plugin.getConfig().getDouble("animation.display-height", 1.8), 0);
-                    if (a.anchorLoc == null || a.anchorLoc.distanceSquared(cur) > 0.01) {
-                        a.anchorLoc = cur;
-                        sendFakeTeleport(pl, (Integer) a.displayRef, cur); // invisible-anchor follow
-                    }
+                    a.anchorLoc = cur;
+                    sendFakeTeleport(pl, (Integer) a.displayRef, cur); // invisible-anchor follow (every tick -> smooth)
                 }
                 sendFakeItemSync(a.owner, (Integer) a.displayRef, stack);
             } else if (a.displayRef instanceof Entity ent) {
@@ -297,6 +342,8 @@ public final class AnimationManager {
         try {
             if (mode == Mode.PROTO_3D) {
                 sendFakeRemove(a.owner, (Integer) a.displayRef);
+                List<Integer> l = liveFakes.get(a.owner);
+                if (l != null) l.remove((Integer) a.displayRef);
             } else if (a.displayRef instanceof Entity ent) {
                 ent.remove();
                 liveEntities.remove(ent);
@@ -313,39 +360,73 @@ public final class AnimationManager {
      */
     private final class ProtoSender {
 
-        private int fakeCounter = -2_000_000;
+        private final java.util.concurrent.atomic.AtomicInteger fakeCounter =
+                new java.util.concurrent.atomic.AtomicInteger(500_000_000);
+
+        private int nextFakeId() { return fakeCounter.getAndAdd(7); }
+
+        /**
+         * Protocol entity-type VarInt of minecraft:item_display.
+         * IMPORTANT: this is the PROTOCOL id (registry order of vanilla types), NOT the
+         * runtime BuiltInRegistries id - and item_display does not exist in 1.19.2 at all.
+         * The value is resolved dynamically by looking up a KNOWN type (zombified_piglin)
+         * in the live registry and comparing against the known protocol table; the result
+         * is cached per server build. Fallback = 111 (item_display in 1.19.4+ registries).
+         */
         private final int itemTypeVarInt = resolveItemDisplayTypeId();
 
-        private int nextFakeId() { return fakeCounter--; }
-
-        /** Registry id of minecraft:item_display on 1.19.2 (absent from the EntityType enum). */
         private int resolveItemDisplayTypeId() {
-            String[] keyClasses = {"net.minecraft.resources.MinecraftKey", "net.minecraft.resources.ResourceLocation"};
-            for (String kc : keyClasses) {
-                try {
-                    Class<?> regCls = Class.forName("net.minecraft.core.registries.BuiltInRegistries");
+            try {
+                Class<?> regCls = null;
+                for (String c : new String[]{"net.minecraft.core.registries.BuiltInRegistries",
+                                             "net.minecraft.core.IRegistryCustom"}) {
+                    try { regCls = Class.forName(c); break; } catch (Throwable ignored) {}
+                }
+                if (regCls != null) {
                     Object reg = regCls.getField("ENTITY_TYPE").get(null);
-                    Class<?> keyCls = Class.forName(kc);
-                    Object key = keyCls.getConstructor(String.class).newInstance("minecraft:item_display");
-                    Object id = reg.getClass().getMethod("getId", keyCls).invoke(reg, key);
-                    if (id instanceof Number n) return n.intValue();
-                } catch (Throwable ignored) {}
-            }
-            return 3; // best-effort default for the 1.19.x protocol registry space
+                    Class<?> mcKey = null;
+                    for (String c : new String[]{"net.minecraft.resources.MinecraftKey",
+                                                 "net.minecraft.resources.ResourceLocation"}) {
+                        try { mcKey = Class.forName(c); break; } catch (Throwable ignored) {}
+                    }
+                    if (mcKey != null) {
+                        Object key = mcKey.getConstructor(String.class).newInstance("minecraft:zombified_piglin");
+                        Object idObj = reg.getClass().getMethod("getId", mcKey).invoke(reg, key);
+                        if (idObj instanceof Number n) {
+                            int runtimeZombie = n.intValue();
+                            // zombified_piglin is protocol id 15 on every 1.19.x version.
+                            int offset = 15 - runtimeZombie;
+                            int display = 111 + offset; // item_display protocol id on 1.19.4 == 111
+                            if (display > 0 && display < 1000) return display;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            // Do NOT guess a registry number: an unknown id spawns a random vanilla mob
+            // (e.g. piglin). Returning -1 disables PROTO_3D -> clean GUI-roulette fallback.
+            return -1;
         }
 
+        /** True only when the item_display protocol id was resolved for this server. */
+        boolean available() { return itemTypeVarInt > 0; }
+
         void spawn(Player p, int entityId, Location at) {
-            if (!protocolLibPresent) return;
+            if (!protocolLibPresent || !available()) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                com.comphenix.protocol.events.PacketContainer spawn = pm.createPacket(PacketType.Play.Server.SPAWN_ENTITY);
-                // 1.19 packet fields: id(VarInt), uuid, type(VarInt), x,y,z(double),
-                // pitch(byte), yaw(byte), data(int), velocity(vector)
-                spawn.getIntegers().write(0, entityId);
-                spawn.getUUIDs().write(0, UUID.randomUUID());
-                spawn.getDoubles().write(0, at.getX()).write(1, at.getY()).write(2, at.getZ());
-                writeEntityTypeVarInt(spawn.getHandle(), itemTypeVarInt);
-                pm.sendServerPacket(p, spawn);
+                Object pm = protocolManager();
+                if (pm == null) return;
+                Object spawn = createPacket(pm, "Play.Server.SPAWN_ENTITY");
+                // 1.19.2 packet layout: entityId(int), UUID, entityType(VarInt), x,y,z(double),
+                // pitch/yaw(byte angles), data(int), velocityX/Y/Z(int), removed(boolean).
+                // ProtocolLib has no setter for the type VarInt -> write it via reflection.
+                invokeWrite(packetIntegers(spawn), 0, entityId);
+                invokeWrite(packetUUIDs(spawn), 0, UUID.randomUUID());
+                Object doubles = packetField(spawn, "getDoubles");
+                invokeWrite(doubles, 0, at.getX());
+                invokeWrite(doubles, 1, at.getY());
+                invokeWrite(doubles, 2, at.getZ());
+                writeEntityTypeVarInt(packetHandle(spawn), itemTypeVarInt);
+                sendPacket(pm, p, spawn);
 
                 // Invisible flag (byte metadata index 0 = 0x20): the client only sees the
                 // rendered item - this is our "invisible anchor" concept.
@@ -359,7 +440,8 @@ public final class AnimationManager {
             Player p = Bukkit.getPlayer(ownerId);
             if (p == null || !protocolLibPresent) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
+                Object pm = protocolManager();
+                if (pm == null) return;
                 Object nms = craftItemStack(stack);                       // net.minecraft.world.item.ItemStack
                 Object optional = java.util.Optional.of(nms);
                 Object serializer = findSerializer("itemstack");          // Optional<ItemStack> serializer
@@ -371,11 +453,15 @@ public final class AnimationManager {
         void teleport(Player p, int entityId, Location at) {
             if (!protocolLibPresent) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                com.comphenix.protocol.events.PacketContainer tele = pm.createPacket(PacketType.Play.Server.ENTITY_TELEPORT);
-                tele.getIntegers().write(0, entityId);
-                tele.getDoubles().write(0, at.getX()).write(1, at.getY()).write(2, at.getZ());
-                pm.sendServerPacket(p, tele);
+                Object pm = protocolManager();
+                if (pm == null) return;
+                Object tele = createPacket(pm, "Play.Server.ENTITY_TELEPORT");
+                invokeWrite(packetIntegers(tele), 0, entityId);
+                Object doubles = packetField(tele, "getDoubles");
+                invokeWrite(doubles, 0, at.getX());
+                invokeWrite(doubles, 1, at.getY());
+                invokeWrite(doubles, 2, at.getZ());
+                sendPacket(pm, p, tele);
             } catch (Throwable ignored) {}
         }
 
@@ -383,8 +469,9 @@ public final class AnimationManager {
             Player p = Bukkit.getPlayer(ownerId);
             if (p == null || !protocolLibPresent) return;
             try {
-                ProtocolManager pm = ProtocolLibrary.getProtocolManager();
-                com.comphenix.protocol.events.PacketContainer rem = pm.createPacket(PacketType.Play.Server.ENTITY_DESTROY);
+                Object pm = protocolManager();
+                if (pm == null) return;
+                Object rem = createPacket(pm, "Play.Server.ENTITY_DESTROY");
                 boolean sent = false;
                 // Modern form: NMS IntList field.
                 for (String cls : new String[]{"net.minecraft.util.IntList", "net.minecraft.nbt.NBTProcessReadFinalizeTag"}) {
@@ -392,27 +479,123 @@ public final class AnimationManager {
                         Class<?> intList = Class.forName(cls);
                         if (!intList.getSimpleName().equals("IntList")) continue;
                         Object list = intList.getConstructor(int[].class).newInstance((Object) new int[]{entityId});
-                        setFieldByType(rem.getHandle(), list.getClass(), list);
+                        setFieldByType(packetHandle(rem), list.getClass(), list);
                         sent = true; break;
                     } catch (Throwable ignored) {}
                 }
-                if (!sent) rem.getIntegerArrays().write(0, new int[]{entityId}); // legacy fallback
-                pm.sendServerPacket(p, rem);
+                if (!sent) {
+                    Object intArrays = packetField(rem, "getIntegerArrays");
+                    invokeWrite(intArrays, 0, new int[]{entityId}); // legacy fallback
+                }
+                sendPacket(pm, p, rem);
             } catch (Throwable ignored) {}
+        }
+
+        // -- ProtocolLib access via REFLECTION ONLY -------------------------
+        // All com.comphenix.* references are string-based so that AnimationManager
+        // verifies/loads even when ProtocolLib is absent (NoClassDefFoundError-safe).
+
+        private static Object protocolManager() {
+            try {
+                Class<?> lib = Class.forName("com.comphenix.protocol.ProtocolLibrary");
+                return lib.getMethod("getProtocolManager").invoke(null);
+            } catch (Throwable t) { return null; }
+        }
+
+        /** pm.createPacket(PacketType.Play.Server.<name>) */
+        private static Object createPacket(Object pm, String typeName) throws Throwable {
+            Class<?> pt = Class.forName("com.comphenix.protocol.PacketType");
+            Class<?> play = Class.forName("com.comphenix.protocol.PacketType$Play");
+            Class<?> server = Class.forName("com.comphenix.protocol.PacketType$Play$Server");
+            Object playEnum = play.getField("PLAY").get(null);
+            Object serverEnum = server.getField("SERVER").get(playEnum);
+            Object type = server.getField(typeName.substring(typeName.lastIndexOf('.') + 1)).get(serverEnum);
+            return server.getMethod("createPacket", pt).invoke(serverEnum, type);
+        }
+
+        private static Object packetHandle(Object container) throws Throwable {
+            return container.getClass().getMethod("getHandle").invoke(container);
+        }
+
+        private static Object packetField(Object container, String getter) throws Throwable {
+            return container.getClass().getMethod(getter).invoke(container);
+        }
+
+        private static Object packetIntegers(Object container) throws Throwable {
+            return packetField(container, "getIntegers");
+        }
+
+        private static Object packetUUIDs(Object container) throws Throwable {
+            return packetField(container, "getUUIDs");
+        }
+
+        /** collection.write(int index, Object value) - StructureModifier polymorphic write. */
+        private static void invokeWrite(Object modifier, int index, Object value) throws Throwable {
+            for (Method m : modifier.getClass().getMethods()) {
+                if (m.getName().equals("write") && m.getParameterCount() == 2
+                        && m.getParameterTypes()[0] == int.class) {
+                    Class<?> vt = m.getParameterTypes()[1];
+                    if (vt.isInstance(value) || (value != null && vt.isAssignableFrom(value.getClass()))) {
+                        m.invoke(modifier, index, value);
+                        return;
+                    }
+                }
+            }
+            throw new NoSuchMethodException("write(int," + value.getClass().getSimpleName() + ")");
+        }
+
+        /** pm.sendServerPacket(Player, PacketContainer) */
+        private static void sendPacket(Object pm, Player p, Object container) throws Throwable {
+            Class<?> entityCls = Class.forName("org.bukkit.entity.Entity");
+            Class<?> containerCls = Class.forName("com.comphenix.protocol.events.PacketContainer");
+            Method m = pm.getClass().getMethod("sendServerPacket", entityCls, containerCls);
+            m.invoke(pm, p, container);
         }
 
         // -- low-level reflection helpers ---------------------------------
 
-        /** Writes the entity-type VarInt field of SPAWN_ENTITY (field order differs per mapping). */
+        /**
+         * Writes the entity-type VarInt field of SPAWN_ENTITY.
+         * The type field sits BETWEEN entityId(int) and the first position double.
+         * Locate it by declaration ORDER (fields between id and x), not by counting
+         * ints: on some mappings the previous heuristic hit a velocity/data field and
+         * left the real type at default 0 = piglin -> client rendered a ghost piglin.
+         */
         private void writeEntityTypeVarInt(Object packet, int typeId) throws Throwable {
             java.lang.reflect.Field[] fs = packet.getClass().getDeclaredFields();
-            int intSeen = 0;
+            java.lang.reflect.Field idF = null, firstD = null;
             for (java.lang.reflect.Field f : fs) {
-                if (f.getType() != int.class) continue;
-                // On 1.19.2 the layout is: [0]=entityId, [1]=entityType, then data/velocity ints.
-                if (intSeen == 1) { f.setAccessible(true); f.setInt(packet, typeId); return; }
-                intSeen++;
+                Class<?> t = f.getType();
+                if ((t == int.class || t == Integer.class) && idF == null) idF = f;
+                else if ((t == double.class || t == Double.class) && firstD == null) firstD = f;
+                if (idF != null && firstD != null) break;
             }
+            if (idF == null || firstD == null) throw new IllegalStateException("SPAWN_ENTITY fields not found");
+            idF.setAccessible(true); firstD.setAccessible(true);
+            java.lang.reflect.Field target = null;
+            try {
+                long offId = idF.getLong(packet), offD = firstD.getLong(packet);
+                if (offD > offId) {
+                    for (java.lang.reflect.Field f : fs) {
+                        Class<?> t = f.getType();
+                        if ((t == int.class || t == Integer.class) && f != idF) {
+                            f.setAccessible(true);
+                            long off = f.getLong(packet);
+                            if (off > offId && off < offD) { target = f; break; }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            if (target == null) {
+                // Fallback: first int field that is NOT the entity id.
+                for (java.lang.reflect.Field f : fs) {
+                    Class<?> t = f.getType();
+                    if ((t == int.class || t == Integer.class) && f != idF) { target = f; break; }
+                }
+            }
+            if (target == null) throw new IllegalStateException("SPAWN_ENTITY type field not found");
+            target.setAccessible(true);
+            target.setInt(packet, typeId);
         }
 
         private Object craftItemStack(ItemStack stack) throws Throwable {
@@ -437,20 +620,20 @@ public final class AnimationManager {
             return itemCls.getConstructor(int.class, serIfc, Object.class).newInstance(index, serializer, value);
         }
 
-        private void sendFlagsMetadata(ProtocolManager pm, Player p, int entityId, byte flags) throws Throwable {
+        private void sendFlagsMetadata(Object pm, Player p, int entityId, byte flags) throws Throwable {
             Object byteSer = findSerializer("byte");
             sendMetadataItems(pm, p, entityId, new Object[]{dataWatcherItem(0, byteSer, flags)});
         }
 
-        private void sendMetadataItems(ProtocolManager pm, Player p, int entityId, Object[] items) {
+        private void sendMetadataItems(Object pm, Player p, int entityId, Object[] items) {
             try {
-                com.comphenix.protocol.events.PacketContainer meta = pm.createPacket(PacketType.Play.Server.ENTITY_METADATA);
-                meta.getIntegers().write(0, entityId);
-                Object handle = meta.getHandle();
+                Object meta = createPacket(pm, "Play.Server.ENTITY_METADATA");
+                invokeWrite(packetIntegers(meta), 0, entityId);
+                Object handle = packetHandle(meta);
                 Object arr = Array.newInstance(items.getClass().getComponentType(), items.length);
                 System.arraycopy(items, 0, arr, 0, items.length);
                 setFieldByType(handle, arr.getClass(), arr);
-                pm.sendServerPacket(p, meta);
+                sendPacket(pm, p, meta);
             } catch (Throwable ignored) {}
         }
 
