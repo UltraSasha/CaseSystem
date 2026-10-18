@@ -57,7 +57,7 @@ public final class CaseManager implements Listener {
         public final String id;
         /** Unique LETTERS-ONLY permission id (a-zA-Z), e.g. "common", "starter". */
         public final String permId;
-        public final String name;
+        public String name;
         public final List<String> description;
         public final boolean showContents;
         public final ItemStack icon;
@@ -135,7 +135,8 @@ public final class CaseManager implements Listener {
             // Unique LETTERS-ONLY permission id: explicit 'permission-id:' or derived from the key.
             String permId = sanitizePermId(cs.getString("permission-id", ""), cid);
             if (permId.isEmpty()) permId = sanitizePermId("", "case" + cid);
-            String name = CaseSystem.Messages.get("gui-case-name").replace("%case%", cs.getString("name", cid));
+            // Raw display name from config (color codes are applied by Messages.color() later).
+            String name = cs.getString("name", cid);
             List<String> desc = new ArrayList<>();
             for (String d : cs.getStringList("description")) desc.add(CaseSystem.Messages.color(d));
             boolean show = cs.contains("show-contents") ? cs.getBoolean("show-contents") : globalShow;
@@ -178,7 +179,7 @@ public final class CaseManager implements Listener {
                         .replace("%color%", def.rarities.get(rarityId).color)
                         .replace("%rarity%", rarityId));
                 lore.add(CaseSystem.Messages.get("item-lore-chance")
-                        .replace("%percent%", String.format(Locale.US, "%.2f%%", placeholderChance(def, rarityId, weight))));
+                        .replace("%percent%", "%CHANCE%")); // filled after all items are parsed
                 ItemStack item = buildIcon(ic, mat,
                         CaseSystem.Messages.get("item-name").replace("%item%", ic.getString("name", iid)),
                         colorizeList(lore));
@@ -195,19 +196,33 @@ public final class CaseManager implements Listener {
                 plugin.getLogger().warning("Case '" + cid + "' has no rarities/items - skipped.");
                 continue;
             }
+            // Apply the messages.yml name template NOW, when all placeholders are known:
+            // %case% = raw config name, %rarities%/%items% = counts. Chance lore lines are
+            // filled below (after every item weight is parsed), then the icon is rebuilt.
+            def.name = CaseSystem.Messages.get("gui-case-name")
+                    .replace("%case%", def.name)
+                    .replace("%rarities%", String.valueOf(def.rarities.size()))
+                    .replace("%items%", String.valueOf(def.items.size()));
+            for (ItemDef it : def.items) {
+                ItemMeta im = it.icon.getItemMeta();
+                if (im == null || !im.hasLore()) continue;
+                List<String> lore2 = new ArrayList<>();
+                for (String l : im.getLore()) {
+                    if (l.contains("%CHANCE%"))
+                        lore2.add(l.replace("%CHANCE%", String.format(Locale.US, "%.2f%%", def.chanceOf(it))));
+                    else lore2.add(l);
+                }
+                im.setLore(lore2);
+                it.icon.setItemMeta(im);
+            }
+            def.icon = buildIcon(root.getConfigurationSection(cid), Material.CHEST,
+                    CaseSystem.Messages.color(def.name), def.description);
             String pid = def.permId.toLowerCase(Locale.ROOT);
             if (permIndex.containsKey(pid))
                 plugin.getLogger().warning("Duplicate permission-id '" + def.permId + "' on case '" + cid + "' - rename it in config.yml!");
             permIndex.put(pid, cid);
             cases.put(cid, def);
         }
-    }
-
-    private double placeholderChance(CaseDef def, String rarityId, int itemWeight) {
-        long rSum = def.totalRarityWeight(), iSum = def.totalItemWeight(rarityId);
-        if (rSum <= 0 || iSum <= 0) return 0;
-        Rarity r = def.rarities.get(rarityId);
-        return (100.0 * r.weight / rSum) * (100.0 * itemWeight / iSum) / 100.0;
     }
 
     private List<String> colorizeList(List<String> in) {

@@ -46,7 +46,8 @@ public final class RewardManager {
         player.updateInventory();
         player.sendMessage(CaseSystem.Messages.get("won-message")
                 .replace("%item%", displayName(item))
-                .replace("%rarity%", rarity.color + rarity.id));
+                .replace("%case%", CaseSystem.Messages.color(c.name))
+                .replace("%rarity%", rarity.color + capitalize(rarity.id)));
     }
 
     /**
@@ -76,6 +77,10 @@ public final class RewardManager {
                 .replace("%case%", caseId == null ? "" : caseId.toLowerCase(Locale.ROOT))
                 .replace("%rarity%", rarityId == null ? "" : rarityId.toLowerCase(Locale.ROOT))
                 .replace("%amount%", String.valueOf(amount));
+    }
+
+    private static String capitalize(String s) {
+        return s == null || s.isEmpty() ? "" : Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
     private static boolean containsPlaceholder(String s) {

@@ -102,43 +102,53 @@ public final class AnimationManager {
 
         int phase1 = Math.max(5, cfg.getInt("animation.phase1-ticks", 40));
         int phase2 = Math.max(5, cfg.getInt("animation.phase2-ticks", 60));
+        // Configurable delays (ticks): rarity->items pause, final display time before reward/GUI.
+        int betweenDelay = Math.max(0, cfg.getInt("animation.between-phases-delay-ticks", 10));
+        int finishDelay  = Math.max(0, cfg.getInt("animation.finish-delay-ticks", 20));
+        int guiStartDelay = Math.max(0, cfg.getInt("animation.gui-start-delay-ticks", 2));
 
         if (mode == Mode.GUI_ROULETTE) {
-            runGuiPhase(p, strip1, phase1, tick, () ->
-                plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
-                    if (p.isOnline()) {
-                        p.playSound(p.getLocation(), fin, 1f, 1f);
-                        deliver(p, c, rarity, item);
-                    }
-                    finish(p, onFinish);
-                }));
+            runGuiPhase(p, strip1, phase1, guiStartDelay, tick, () ->
+                Bukkit.getScheduler().runTaskLater(plugin, () ->
+                    plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
+                        if (p.isOnline()) {
+                            p.playSound(p.getLocation(), fin, 1f, 1f);
+                            deliver(p, c, rarity, item);
+                        }
+                        Bukkit.getScheduler().runTaskLater(plugin, () -> finish(p, onFinish), finishDelay);
+                    }), betweenDelay));
             return;
         }
 
         // ---- 3D path (native or protocol) ----
         Anchor anchor = createAnchor(p, height);
         if (anchor == null) { // adapter failed -> flat fallback for this session
-            runGuiPhase(p, strip1, phase1, tick, () ->
-                plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
-                    if (p.isOnline()) { deliver(p, c, rarity, item); }
-                    finish(p, onFinish);
-                }));
+            runGuiPhase(p, strip1, phase1, guiStartDelay, tick, () ->
+                Bukkit.getScheduler().runTaskLater(plugin, () ->
+                    plugin.cases().startRoulette(p, strip2, indexIn(strip2, item.icon), () -> {
+                        if (p.isOnline()) { deliver(p, c, rarity, item); }
+                        Bukkit.getScheduler().runTaskLater(plugin, () -> finish(p, onFinish), finishDelay);
+                    }), betweenDelay));
             return;
         }
+        showAt(anchor, strip1.get(0)); // show the reel immediately at animation start
         runReel3D(p, anchor, strip1, phase1, tick, part, indexOfRarity(c, rarity, strip1), () ->
-            runReel3D(p, anchor, strip2, phase2, tick, part, indexIn(strip2, item.icon), () -> {
-                destroyAnchor(anchor);
-                if (p.isOnline()) {
-                    p.playSound(p.getLocation(), fin, 1f, 1f);
-                    if (part != null)
-                        p.spawnParticle(part, p.getEyeLocation().add(0, height, 0), 40, 0.3, 0.3, 0.3, 0.15);
-                    deliver(p, c, rarity, item);
-                }
-                finish(p, onFinish);
-            }));
+            Bukkit.getScheduler().runTaskLater(plugin, () ->
+                runReel3D(p, anchor, strip2, phase2, tick, part, indexIn(strip2, item.icon), () -> {
+                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                        destroyAnchor(anchor);
+                        if (p.isOnline()) {
+                            p.playSound(p.getLocation(), fin, 1f, 1f);
+                            if (part != null)
+                                p.spawnParticle(part, p.getEyeLocation().add(0, height, 0), 40, 0.3, 0.3, 0.3, 0.15);
+                            deliver(p, c, rarity, item);
+                        }
+                        finish(p, onFinish);
+                    }, finishDelay);
+                }), betweenDelay));
     }
 
-    private void runGuiPhase(Player p, List<ItemStack> strip, int ticks, Sound tick, Runnable end) {
+    private void runGuiPhase(Player p, List<ItemStack> strip, int ticks, int startDelay, Sound tick, Runnable end) {
         org.bukkit.inventory.Inventory inv = Bukkit.createInventory(new CaseManager.GuiHolder(CaseManager.View.ROULETTE), 27,
                 CaseSystem.Messages.color(plugin.getConfig().getString("gui.roulette-title", "&8Открытие&7...")));
         for (int i = 0; i < 9; i++) inv.setItem(10 + i, strip.get(i % strip.size()));
@@ -147,13 +157,15 @@ public final class AnimationManager {
         final int[] task = new int[1];
         task[0] = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             t[0]++;
-            for (int i = 0; i < 9; i++) inv.setItem(10 + i, strip.get(Math.floorMod(t[0] * 2 + i - 4, strip.size())));
-            p.playSound(p.getLocation(), tick, 0.5f, 1f + (t[0] % 4) * 0.1f);
+            double frac = Math.min(1.0, (double) t[0] / ticks);
+            int speed = 2 + (int) ((1.0 - frac) * 4); // fast start, decelerating to 2/tick
+            for (int i = 0; i < 9; i++) inv.setItem(10 + i, strip.get(Math.floorMod(t[0] * speed + i - 4, strip.size())));
+            p.playSound(p.getLocation(), tick, 0.5f, 1f + (float) frac * 0.6f);
             if (t[0] >= ticks) {
                 Bukkit.getScheduler().cancelTask(task[0]);
                 end.run();
             }
-        }, 1L, 1L).getTaskId();
+        }, (long) startDelay, 1L).getTaskId();
     }
 
     /**

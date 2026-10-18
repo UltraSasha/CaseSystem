@@ -328,6 +328,22 @@ public final class DataManager {
      *  - new-style "casesystem.case.&lt;pid&gt;"             -> revoked, +1 to the counter of that case
      * OPs keep bare nodes as unlimited access. Numbered nodes (count.<pid>.<n>) are never touched.
      */
+
+    /** Sends the messages.yml "migrated" notice to the online player (and logs it). */
+    private void notifyMigrated(String name, String caseId, String perm, int count) {
+        try {
+            CaseManager.CaseDef c = plugin.cases().getCases().get(caseId);
+            String msg = CaseSystem.Messages.get("migrated")
+                    .replace("%player%", name)
+                    .replace("%case%", CaseSystem.Messages.color(c != null ? c.name : caseId))
+                    .replace("%perm%", perm)
+                    .replace("%amount%", String.valueOf(count));
+            Player pl = Bukkit.getPlayerExact(name);
+            if (pl != null) pl.sendMessage(msg);
+            plugin.getLogger().info("[CaseSystem] Migrated bare node for '" + name + "' case '" + caseId + "' -> counter=" + count);
+        } catch (Throwable ignored) {}
+    }
+
     private void migrateBareNodes(UUID id, String name) {
         Player p = Bukkit.getPlayer(id);
         if (p == null || p.isOp()) return;
@@ -353,8 +369,9 @@ public final class DataManager {
                     for (Object n : bareNodes) lpRemove(u, n);
                     int cur = hasNumbered ? getAvailable(id, name, caseId)
                             : cache.getOrDefault(id, new HashMap<>()).getOrDefault(pid, 0);
-                    setOpens(id, name, caseId, Math.max(0, cur) + 1); // also saves the user via LP API
-                    plugin.getLogger().info("[CaseSystem] Migrated bare node(s) for '" + name + "' case '" + caseId + "' -> counter+1");
+                    int newCount = Math.max(0, cur) + 1;
+                    setOpens(id, name, caseId, newCount); // also saves the user via LP API
+                    notifyMigrated(name, caseId, bareNew, newCount);
                 } catch (Throwable t) {
                     plugin.getLogger().warning("Bare-node migration failed for " + name + ": " + t.getMessage());
                 }
@@ -368,7 +385,7 @@ public final class DataManager {
                     if (hadBareNew) p.removeAttachment(p.addAttachment(plugin, bareNew, false));
                     int cur = cache.getOrDefault(id, new HashMap<>()).getOrDefault(pid, 0);
                     setOpens(id, name, caseId, cur + 1);
-                    plugin.getLogger().info("[CaseSystem] Migrated bare perm for '" + name + "' case '" + caseId + "' -> counter+1");
+                    notifyMigrated(name, caseId, hadBareNew ? bareNew : legacy, cur + 1);
                 }
             }
         }

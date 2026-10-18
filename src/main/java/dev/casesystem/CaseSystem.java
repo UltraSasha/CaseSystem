@@ -95,6 +95,15 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
     public void reloadAll() {
         reloadConfig();
         Messages.load();
+        // Re-parse cases so GUI names/lores/chances pick up the new messages.yml templates.
+        if (caseManager != null) caseManager.parseCases(getConfig());
+    }
+
+
+    /** Colored display name of a case (falls back to the raw id if unknown). */
+    private String caseName(String caseId) {
+        CaseManager.CaseDef c = caseManager.getCases().get(caseId);
+        return Messages.color(c != null ? c.name : caseId);
     }
 
     // ------------------------------------------------------------------
@@ -139,7 +148,7 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                 dataManager.addOpens(target.getUniqueId(), target.getName(), caseId, amount);
                 String m = Messages.get("given")
                         .replace("%player%", target.getName())
-                        .replace("%case%", caseId)
+                        .replace("%case%", caseName(caseId))
                         .replace("%amount%", String.valueOf(amount));
                 sender.sendMessage(m);
                 if (sender != target) target.sendMessage(m);
@@ -163,7 +172,7 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                 int taken = dataManager.takeOpens(target.getUniqueId(), target.getName(), caseId, amount);
                 String m = Messages.get("taken")
                         .replace("%player%", target.getName())
-                        .replace("%case%", caseId)
+                        .replace("%case%", caseName(caseId))
                         .replace("%amount%", String.valueOf(taken));
                 sender.sendMessage(m);
                 return true;
@@ -182,7 +191,7 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                 sender.sendMessage(Messages.get("stats-header").replace("%player%", tname));
                 for (CaseManager.CaseDef c : caseManager.getCases().values()) {
                     sender.sendMessage(Messages.get("stats-entry")
-                            .replace("%case%", c.id)
+                            .replace("%case%", Messages.color(c.name))
                             .replace("%available%", fmt(dataManager.getAvailable(tid, tname, c.id)))
                             .replace("%opened%", String.valueOf(dataManager.getOpened(tid, c.id))));
                 }
@@ -200,7 +209,7 @@ public final class CaseSystem extends JavaPlugin implements Listener, TabComplet
                     String avail = "нет";
                     if (sender instanceof Player pl) avail = fmt(dataManager.getAvailable(pl.getUniqueId(), pl.getName(), c.id));
                     sender.sendMessage(Messages.get("list-entry")
-                            .replace("%case%", c.id)
+                            .replace("%case%", Messages.color(c.name))
                             .replace("%available%", avail)
                             .replace("%perm%", c.permId)
                             .replace("%rarities%", rs.toString()));
